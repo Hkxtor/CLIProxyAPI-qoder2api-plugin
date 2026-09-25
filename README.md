@@ -1,5 +1,10 @@
 # qoder2api-plugin
 
+[![CI](https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Hkxtor/CLIProxyAPI-qoder2api-plugin?display_name=tag)](https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+
 把 [qoder2api](https://github.com/Zhengyuuuui/qoder2api) 打包成 **CLIProxyAPI 原生动态库插件**。
 
 插件通过宿主的 `cliproxy_plugin_init` ABI 加载，一次性声明五类能力，宿主的管理端、路由、
@@ -26,14 +31,36 @@
 
 ## 构建
 
+需要 Go 1.22+ 与 C 编译器（`cgo`）。CI（`.github/workflows/ci.yml`）会在 5 个平台上构建，
+打 `v*` tag 时自动把产物发布成 Release；本地构建 = `./build.sh`。
+
+发行版号由 CI 用 `-ldflags -X main.pluginVersion=<tag>` 注入，本地构建保留默认值。
+
 ```bash
 ./build.sh          # 先跑 go test ./...，再产出 dist/qoder2api.so
 ```
 
 产物按平台命名：Linux `qoder2api.so`、macOS `qoder2api.dylib`、Windows `qoder2api.dll`。
-需要 Go 1.22+ 与 CGO（`-buildmode=c-shared`）。
 
 ## 安装
+
+### 方式一：下载预编译产物（不用装 Go）
+
+[Releases](https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/releases) 里按平台取文件，
+**重命名成宿主认识的插件名**后放进 `plugins/`：
+
+| 平台 | 下载文件 | 放进去时改名为 |
+| --- | --- | --- |
+| Linux x86_64 | `qoder2api-linux-amd64.so` | `qoder2api.so` |
+| Linux arm64 | `qoder2api-linux-arm64.so` | `qoder2api.so` |
+| macOS（Apple Silicon） | `qoder2api-darwin-arm64.dylib` | `qoder2api.dylib` |
+| macOS（Intel） | `qoder2api-darwin-amd64.dylib` | `qoder2api.dylib` |
+| Windows x64 | `qoder2api-windows-amd64.dll` | `qoder2api.dll` |
+
+同名 Release 附带的 `SHA256SUMS.txt` 可用于校验；产物是宿主 ABI 的 `c-shared` 动态库，
+文件名必须是 `qoder2api.<ext>`（宿主用文件名（去掉扩展名）作为插件 ID）。
+
+### 方式二：本地构建
 
 1. 把产物放进 CPA 的插件目录（`plugins.dir` 指向的目录）：
 
