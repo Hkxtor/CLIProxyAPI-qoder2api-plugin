@@ -11,12 +11,31 @@ import (
 	"qoder2api-plugin/internal/logger"
 )
 
+// pluginVersion 是插件版本，会在注册/状态接口里回给宿主。
+//
+// 故意写成 var：CI 用 `-ldflags -X main.pluginVersion=<tag>` 把发行版号注入产物，
+// 本地直接 `./build.sh` 则保留 defaultPluginVersion。
+var pluginVersion = defaultPluginVersion
+
+// defaultPluginVersion 是未注入时的版本号。
+const defaultPluginVersion = "0.1.0"
+
+// effectivePluginVersion 返回对外上报的版本号。
+//
+// 防御 `-X main.pluginVersion=` 传成空值（或构建脚本变量为空）的情况：
+// 此时宁可显示默认版本，也不要让管理端与注册信息里出现空版本号。
+func effectivePluginVersion() string {
+	if version := strings.TrimSpace(pluginVersion); version != "" {
+		return version
+	}
+	return defaultPluginVersion
+}
+
 const (
 	// pluginID 必须与动态库文件名一致（qoder2api.so → plugins.configs.qoder2api）。
 	pluginID = "qoder2api"
 	// pluginDisplayName 是管理端展示名。
 	pluginDisplayName = "Qoder 2API"
-	pluginVersion     = "0.1.0"
 	pluginAuthor      = "Zhengyuuuui"
 	pluginRepository  = "https://github.com/Zhengyuuuui/qoder2api"
 
@@ -64,7 +83,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginDisplayName,
-			Version:          pluginVersion,
+			Version:          effectivePluginVersion(),
 			Author:           pluginAuthor,
 			GitHubRepository: pluginRepository,
 			ConfigFields: []pluginapi.ConfigField{

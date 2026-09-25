@@ -130,7 +130,7 @@ func buildStatusPayload() statusPayload {
 
 	payload := statusPayload{
 		Plugin:      pluginDisplayName,
-		Version:     pluginVersion,
+		Version:     effectivePluginVersion(),
 		Region:      string(cfg.Region),
 		ModelPrefix: cfg.ModelPrefix,
 		StateDir:    cfg.StateDir,

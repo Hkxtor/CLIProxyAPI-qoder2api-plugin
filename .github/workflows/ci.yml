@@ -1,0 +1,141 @@
+name: CI
+
+# main 分支与 PR 上跑测试+构建；打 `v*` tag 时额外发布 Release（含各平台 c-shared 产物）。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一 ref 上只保留最新一次运行；tag 构建不取消（要出 Release）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  test:
+    name: 测试（gofmt / vet / go test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          # 本项目没有第三方依赖（无 go.sum），关掉模块缓存以免 setup-go 报警告。
+          cache: false
+
+      - name: gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          # cpasdk/ 是与宿主 ABI 对齐的 vendored 副本，保持与上游一致的排版，不参与格式检查。
+          unformatted=$(gofmt -l . | grep -v '^cpasdk/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1 -timeout 300s
+
+  build:
+    name: 构建 ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    # darwin/amd64 与 windows/amd64 属于尽力而为的平台：失败不阻塞其他平台出产物与 Release。
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  goos: linux,   goarch: amd64, ext: so,    cc: gcc,                   experimental: false }
+          - { os: ubuntu-latest,  goos: linux,   goarch: arm64, ext: so,    cc: aarch64-linux-gnu-gcc, experimental: false }
+          - { os: macos-14,       goos: darwin,  goarch: arm64, ext: dylib, cc: clang,                 experimental: false }
+          - { os: macos-14,       goos: darwin,  goarch: amd64, ext: dylib, cc: 'clang -arch x86_64', experimental: true }
+          - { os: windows-latest, goos: windows, goarch: amd64, ext: dll,   cc: gcc,                   experimental: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: 安装交叉编译器（linux/arm64）
+        if: matrix.cc == 'aarch64-linux-gnu-gcc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: 环境信息
+        shell: bash
+        run: |
+          go version
+          ${{ matrix.cc }} --version | head -1
+
+      - name: 构建 c-shared 插件
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -buildmode=c-shared -trimpath \
+            -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+            -o "dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" .
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载全部平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          ls -la
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 创建 Release 并上传产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            assets/*
