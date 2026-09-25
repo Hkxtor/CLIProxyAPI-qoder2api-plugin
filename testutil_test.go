@@ -303,6 +303,12 @@ func resetPluginGlobals(t *testing.T) {
 	credentialCacheMu.Lock()
 	credentialCache = map[string]credentialCacheEntry{}
 	credentialCacheMu.Unlock()
+
+	// OAuth 登录会话同样是包级全局；默认不节流，节流本身由专门用例覆盖。
+	authLoginStore.mu.Lock()
+	authLoginStore.pending = map[string]*pendingAuthLogin{}
+	authLoginStore.mu.Unlock()
+	authLoginUpstreamInterval = 0
 }
 
 // setupTestPlugin 准备一个使用临时状态目录的插件实例。

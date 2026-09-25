@@ -155,6 +155,54 @@ POST /v0/management/plugin-store/qoder2api/install?source=source-94348b6b9bec
 YAML 解析失败（`line 114: did not find expected '-' indicator`）导致宿主起不来，停机约 2 分钟。
 教训：**改生产 YAML 后必须先过一遍解析器再重启**，`config.yaml` 的 `plugins` 子键要缩进 2 空格。
 
+### v0.1.2：面板 OAuth 登录（auth.login.start / auth.login.poll）
+
+**用户报告**：加载插件后，在面板用 OAuth 登录报 `failed to generate authorization url`。
+
+**根因**：宿主把 `GET /v0/management/<provider>-auth-url` 路由到已注册 auth provider 的
+`StartLogin`（`auth_files_oauth_callback.go` → `pluginhost.StartLogin`），而插件只实现了
+`auth.identifier/parse/refresh`，缺 `auth.login.start`：
+
+```text
+GET /v0/management/qoder-auth-url → 500 {"error":"failed to generate authorization url"}
+宿主日志: failed to start plugin auth login error=unknown method: auth.login.start
+```
+
+对照实验（同一宿主）：内置 provider 的 `codex/anthropic/antigravity-auth-url` 全部 200，
+只有插件 provider（qoder）失败 —— 确认与插件无关的内置 OAuth 不受影响。
+
+**修复**：按上游 `qoder2api/account/oauth.go` 的 device flow + PKCE 实现两个 ABI 方法
+（`auth_login.go`）：
+
+```text
+start: {DeviceLoginBase}?nonce=&challenge=&challenge_method=S256&client_id=e883ade2-…
+poll : {PollEndpoint}?nonce=&verifier=&challenge_method=S256
+       404 = 用户尚未授权（继续等待）；200 = {token, refresh_token}
+```
+
+登录产物与导入路径同构（同一 `parseQoderCredential` 可读回；`Metadata.refresh_token` 让宿主
+认可“可刷新”），所以额度、签到、刷新链路无需改动。另外：区域按 `?region=` → 插件配置优先级选取；
+单会话 10 分钟有效期；同会话上游轮询做 1.2 秒节流；上游 5xx/网络抖动只记日志并保持 pending
+（不当成凭证失败）。
+
+**单测覆盖**（`auth_login_test.go`，11 个用例）：URL/PKCE 参数、state 唯一、区域选择、wait→success、
+产物同构（含 `parseQoderCredential` 回读断言）、userinfo 失败降级、上游 5xx 保持会话、
+未知/过期 state、节流、宿主字段名的 wire 契约、落盘 ID 安全性。
+
+**踩坑记录（重要）**：插件商店安装会把 `store.version` + `store.release-tag` 写进
+`config.yaml` 的 `plugins.configs.<id>`，宿主 `selectPluginFiles` 按这个版本**钉死**文件选择：
+
+- 手动往 `plugins/<goos>/<goarch>/` 放更高版本的 `.so` **不会生效**，且宿主**静默**跳过（无任何日志）；
+- 手工改 `store.version` 而不改 `release-tag` 同样加载不到（实测两者并存时插件根本不加载）；
+- 临时实例不加载插件也是同一机制（config 里带着从生产复制的 `store.version: 0.1.1`，
+  放进去的 `qoder2api.so` / `qoder2api-v0.1.2.so` 版本都对不上）。
+
+结论：**升级只能走商店**（面板更新或 `POST /v0/management/plugin-store/qoder2api/install`），
+它会同时更新 `store.version` 与 `release-tag` 并下载 CI 产物。
+
+⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
+`store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：

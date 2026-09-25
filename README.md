@@ -111,6 +111,12 @@ zip 根目录下**只能有** `{id}{ext}` 一个动态库，校验和资产名�
 同名 Release 附带的 `SHA256SUMS.txt` 可用于校验；产物是宿主 ABI 的 `c-shared` 动态库，
 文件名必须是 `qoder2api.<ext>`（宿主用文件名（去掉扩展名）作为插件 ID）。
 
+> ⚠️ **如果你已经用插件商店装过本插件**，宿主会把版本钉在
+> `config.yaml` 的 `plugins.configs.qoder2api.store.version`（以及 `release-tag`）上，
+> 此时手动往 `plugins/` 里丢新 `.so` **不会生效**（新版文件会被版本过滤掉，而且宿主对此是静默的）。
+> 请用商店升级（面板里的“更新”，或 `POST /v0/management/plugin-store/qoder2api/install`）。
+> 宿主从商店安装的产物位于 `plugins/<goos>/<goarch>/qoder2api-v<版本>.<ext>`。
+
 ### 方式三：本地构建
 
 1. 把产物放进 CPA 的插件目录（`plugins.dir` 指向的目录）：
@@ -144,7 +150,41 @@ zip 根目录下**只能有** `{id}{ext}` 一个动态库，校验和资产名�
 
 ## 账号导入
 
-### 方式一：直接把 qoder2api 的账号导出文件丢进 auths/（推荐）
+### 方式一：面板 OAuth 登录（推荐，浏览器授权一次即可）
+
+插件实现了 CPA 的 `auth.login.start` / `auth.login.poll`，可以直接在面板里登录 qoder 账号：
+
+1. 打开管理面板 → 添加认证 / 登录 → 选 **Qoder 2API**；
+2. 浏览器打开插件返回的登录页（`https://qoder.com/device/selectAccounts`，带 PKCE 参数）；
+3. 在弹出的页面选择/登录你的 Qoder 账号并确认；
+4. 面板轮询到授权完成后，插件把 `device_token` + `refresh_token` 写成一个 auth 文件，账号立即可用、可自动续期。
+
+也可以直接调接口拿登录 URL：
+
+```bash
+# 默认跟随插件配置的 region；需要国内版就加 ?region=cn
+curl -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
+  "http://127.0.0.1:<port>/v0/management/qoder-auth-url"
+# → {"url":"https://qoder.com/device/selectAccounts?...","state":"..."}
+#
+# 浏览器授权后用 state 轮询（面板会自动做这件事）
+curl -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
+  "http://127.0.0.1:<port>/v0/management/oauth-callback?state=<state>"
+# → {"status":"wait"} 直到授权完成 → {"status":"ok"}
+```
+
+要点：
+
+- **区域**：`?region=cn` 或 `?region=global` 覆盖插件默认 `region`（国内账号必须用 `cn`，否则登录页域名不对）；
+- **有效期**：单次登录会话 10 分钟，超时面板会提示重新发起；
+- **节流**：面板轮询快于上游建议节奏，插件对同一会话做 1.2 秒最小间隔，避免打满上游；
+- **登录产物与导入完全同构**：同一个 `auth.refresh` 路径解析、同一个额度/签到链路；
+- 登录失败时面板会显示具体原因（网络/上游状态码等），插件不会把瞬时失败当成凭证无效。
+
+> 历史背景：v0.1.2 之前插件只实现了文件型 auth（identifier/parse/refresh），面板点 OAuth 登录会返回
+> `failed to generate authorization url`（宿主日志 `unknown method: auth.login.start`）。已修复。
+
+### 方式二：直接把 qoder2api 的账号导出文件丢进 auths/（推荐）
 
 qoder2api 桌面端导出的 `qoder2api-accounts-*.json`（`format: "qoder2api-accounts"`，
 **必须勾选包含凭证**）可以直接放进去，不用手工拆：
@@ -162,7 +202,7 @@ install -m 600 qoder2api-accounts-<导出日期>.json /path/to/cpa/auths/
 导出条目里的字段映射：`secret` 里的 `device_token`/`refresh_token` → 插件的凭证；
 `name`/`email`/`plan`/`region` → 展示与区域；用户可见的账号 ID 用导出里的 `id`。
 
-### 方式二：手写单账号文件
+### 方式三：手写单账号文件
 
 一个文件一个账号，放在 CPA 的 `auth-dir`（通常是 `auths/`）：
 
@@ -189,8 +229,8 @@ OAuth 导出里的 `"secret": "{\"device_token\":\"dt-…\",\"refresh_token\":\"
 
 | 位置 | 内容 |
 | --- | --- |
-| `CLIProxyAPI/auths/` 下的账号文件 | 导入的账号（宿主首次刷新后会改写成扁平单账号格式） |
-| `CLIProxyAPI/plugins/qoder2api.so` | 插件产物 |
+| `CLIProxyAPI/auths/` 下的账号文件 | 导入或面板登录得到的账号（宿主首次刷新后会改写成扁平单账号格式） |
+| `CLIProxyAPI/plugins/qoder2api.so` | 插件产物（手动安装）；商店安装则是 `plugins/<goos>/<goarch>/qoder2api-v<版本>.so` |
 | `CLIProxyAPI/config.yaml` | 监听端口、`auth-dir: auths`、`plugins.enabled: true`、插件配置、API key 与管理密钥 |
 | `CLIProxyAPI/bin/cpa-server` | 宿主二进制（不要提交进仓库） |
 | 自行另存的 `cpa-management-key`（600） | 管理密钥明文（`config.yaml` 里的那份启动时会被哈希回写，所以明文另存） |
