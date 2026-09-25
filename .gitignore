@@ -1,0 +1,29 @@
+# 构建产物（不要提交：`.so`/`.dylib`/`.dll` 是平台相关的）
+dist/
+*.so
+*.dylib
+*.dll
+
+# 宿主侧的凭证与运行状态（**绝不能进版本库**）
+auths/
+state.json
+machine_salt
+logs/
+*.log
+
+# 本地配置与密钥
+.env
+.env.*
+cpa-management-key
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 测试与调试临时产物
+tmp/
+*.out
+coverage.out

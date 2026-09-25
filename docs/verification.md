@@ -1,0 +1,151 @@
+# qoder2api-plugin 实测记录（更新于免费模型实测与流式分帧修复之后）
+
+> 这是本插件在本机的实测记录，已去除账号、密钥与本机绝对路径等敏感信息。
+
+产物：`dist/qoder2api.so`（`cliproxy_plugin_init` ABI，CGO `c-shared`）。
+许可：GPL-3.0（移植自 QCCG/qoder2api）。
+
+## 本轮做了什么
+
+用一份 qoder2api 桌面端导出的国际版账号配置（多账号 bundle）做导入，导入过程暴露并修掉了 4 个真实缺陷。
+
+### 1. 导出文件不能导入（功能缺失 → 已实现）
+
+原先只认扁平 `token`/`device_token` 字段，导出格式是
+`{"format":"qoder2api-accounts","accounts":[{"secret":"{\"device_token\":…,\"refresh_token\":…}"}]}`。
+
+现在：`auth.parse` 识别导出文件并一个文件展开成多个 CPA 账号（`AuthParseResponse.Auths`），
+保留每条账号的 `region`/`name`/`email`/`plan`/`id`；`secret` 既可嵌 JSON 也可为明文 token；
+坏条目跳过并计数，全都不可用时报错并提示“导出时要勾选包含凭证”。
+
+### 2. `host.http.do` 状态码恒为 0（严重 → 已修）
+
+宿主把 `pluginapi.HTTPResponse`（**无 json tag**）直接放进 RPC 信封，线上键名是 Go 字段名
+`StatusCode`/`Headers`/`Body`；插件按 `status_code` 解析 → 状态码永远 0 →
+`bridge/client.go` 的 `StatusCode != 200` 判定把**所有非流式上游请求判成失败**：
+模型清单、额度、签到、非流式对话全废。错误体里带着上游真实响应，看起来像“凭证被拒”，极难排查
+（我此前就误判过一次）。现在两种键名都接受，且缺失状态码时直接报 ABI 不匹配而不是静默当 0。
+测试 mock 也改成宿主真实形态，并加了双形态回归测试。
+
+### 3. 签到域名写死国内（严重 → 已修）
+
+忠实移植了上游的 `openapi.qoder.com.cn`。实测国际版 device token 打国内域名一律
+`401 TOKEN_EXPIRE`，换 `openapi.qoder.sh` 即 200。现在按账号 `region` 选域名（`Endpoints.SashBase`）。
+另外实测国际版**没有**每日签到计划（`/sash/api/v1/me/daily-check-in*` → 404 NotFound），
+只有 `VIEW_DETAILS` 促销活动；插件不会误领促销，并明确提示“该区域无每日签到活动”。
+
+### 4. 凭证不会被宿主刷新（→ 已修）
+
+宿主判断“可否刷新”看 `auth.Metadata["refresh_token"]`，并靠 `NextRefreshAfter` 排期。
+插件原先两者都没给，导致 `/auth-files/refresh` 返回 `results: []`（根本不尝试）。
+现在 OAuth 账号会带上 `refresh_token` 元数据与下次刷新时间；PAT 账号不会伪造 refresh token。
+
+### 5. 免费模型“排队”被当成额度不足（严重 → 已修）
+
+用户提示 Qwen3.8-Flash 是免费调用、可直接测。实测确实能出字，但上游有**排队制**：
+繁忙时返回 **HTTP 403**，正文是
+`{"isQueued":true,"serviceAvailable":false,"queueType":"p3","retryAfterSeconds":30}`
+（`retryAfterSeconds` 在 9~30 秒之间浮动）。
+
+修复前：这个 403 被原样抛出，宿主标成 `insufficient_quota` / `permission_error`，把用户
+**引向充值**（其实免费模型与额度无关）。
+
+修复后：
+
+1. `internal/bridge/queue.go` 识别排队信号（多层转义 JSON + `data:` 前缀 + 正则兜底都能认），
+   该错误被明确标注为 `upstream_model_busy`；
+2. 按上游建议时长等待后重开上游（默认最多 2 次），期间调用方无感；
+   等待预算耗尽才返回 **503 + `qoder_model_busy`**，消息写明“不是额度或凭证问题”；
+3. 新增配置 `queue_max_waits`（默认 2，`0` = 快速失败）与 `queue_wait_seconds`
+   （默认 0 = 跟随上游建议值），支持 `PATCH /v0/management/plugins/qoder2api/config` 热重载；
+4. fast-fail 模式（`queue_max_waits: 0`）不会退化成 1s/2s 的瞬时重试去白打上游。
+
+### 6. 流式内容全空：分帧重复（严重 → 已修）
+
+真实客户端实测发现流式**看似正常、内容全空**：宿主写出的是 `data: data: {...}`。
+根因是分帧契约按协议不同：
+
+- **chat-completions**：宿主处理器自己 `fmt.Fprintf("data: %s\n\n", chunk)` → 插件必须发**裸 JSON**，
+  且**不能**发 `[DONE]`（宿主自己补）；
+- **claude / codex**：宿主处理器**原样写出** → 插件必须发完整 SSE 帧（`event:`/`data:`）。
+
+插件原先三种协议统一加 `data: ` 前缀 → OpenAI 客户端收到无效 JSON，流式内容全空。
+现在 `streamWriter` 按宿主声明的输出格式（`rpc.format`）归一化分帧；
+端到端测试升级为**解析**每个分片（`json.Valid`），不再用子串匹配（旧断言正是被
+`data: data:` 蒙过去的原因）。
+
+### 7. 宿主冷却会掩盖真实原因（现象说明，非缺陷）
+
+插件报错后宿主会冷却该凭证（`transient-error-cooldown-seconds`，默认约 60 秒）。
+排队失败后立刻重试同一模型会收到
+`auth_unavailable: no auth available ... last upstream error: 上游模型 qfmodel 排队中`。
+这不是新错误，是宿主在冷却期内不复用该凭证；等冷却过去或重启宿主即可。
+
+## 部署到宿主（本机实测）
+
+按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：
+
+- `auths/` 下的多账号导出文件（600）—— 原件未改动（md5 核对一致）；
+  宿主首次成功刷新后会把它改写成扁平单账号格式（既定行为）。
+- `plugins/qoder2api.so`、`bin/cpa-server`、`config.yaml`（port 18318 / auth-dir auths / 插件启用）。
+- 管理密钥明文会被宿主启动时哈希回写，故明文另存为独立文件（600）。
+- 管理页：`http://127.0.0.1:18318/v0/resource/plugins/qoder2api/console`。
+- 验证完成后已停服（端口释放、`plugin unloaded`）；启动命令写在 README。
+
+### 部署侧修复：管理端额度路由只发 AuthIndex、不发 StorageJSON（严重 → 已修）
+
+宿主 `internal/api/handlers/management/plugin_quota.go` 组装 `QuotaFetchRequest` 时
+只带 `AuthIndex`/`AuthID`/`Metadata`/`Attributes`；插件又不把 token 放进 metadata/attributes，
+而 `handleQuotaFetch` 只解析 `StorageJSON` → 真实部署里额度查询直接 502
+（`auth storage has no token field ... and no secret blob`）。现在额度/刷新/执行三条路径统一走
+`resolveRPCCredential`：优先用宿主给的 storage，缺失则按 auth_index（必要时用 auth_id 经
+`host.auth.list` 映射）回查；`host.auth.get` 只认 index，不能拿 id 直接当 index 用。
+同一处还把 `model.for_auth`、执行路径的凭证解析改成 bundle 感知，避免多账号导出文件被误判。
+
+## 真实账号实测（evidence）
+
+账号：一个国际版 Qoder 账号（**已脱敏**），区域 global，OAuth（device + refresh token）。
+
+| 项目 | 结果 |
+| --- | --- |
+| 导入 | 1 账号，`region=global`、`auth_mode=oauth`、`email` 正确 |
+| 凭证有效性 | 宿主驱动刷新 `{"success":true}`（插件内 userinfo 200） |
+| 真实上游模型清单 | `POST /plugins/qoder2api/models/refresh` → 200，15 个模型 |
+| 模型注册 | `/v1/models` → 19 个 `q2-*`（15 实时 + 别名/兜底） |
+| 真实额度 | 200：`plan=Free`、`userQuota.total=0`、`isQuotaExceeded=true` |
+| 非流式对话 | 上游 403 `code 112`（pricingUrl）→ 插件转 403 `insufficient_quota` |
+| 流式对话 | 事件流打通，上游业务错误原样回传 |
+| **免费模型 Qwen3.8-Flash 非流式** | **200 + 真实内容**（`你好`，`finish_reason=stop`，tokens≈13.2k），中途排队 130 秒后成功 |
+| **免费模型 Qwen3.8-Flash 流式（OpenAI 协议）** | **200，21 个分片全部可解析，0 个不可解析**，内容完整 |
+| **免费模型 Qwen3.8-Flash 流式（Claude `/v1/messages`）** | **200**：`message_start`→`content_block_start`→`ping`→`content_block_delta`(text=你好)→`content_block_stop`→`message_delta`→`message_stop`，中途排队 30 秒后成功 |
+| 免费模型排队耗尽预算 | 503 + `qoder_model_busy`（消息明确“不是额度或凭证问题”） |
+| 签到 | 打对区域（不再 401），返回 `no_campaign`（国际版无签到计划） |
+| 稳定性 | 无 panic/fuse，日志不含凭证 |
+| 本仓库部署 | 9/9 冒烟通过（含修复后的额度路由）；管理页 6 个接口全 200；`/console` 返回 HTML |
+
+**关键结论**：链条已完整打通到上游并正确回传上游语义。该账号是 **Free 计划、额度 0**
+（`isQuotaExceeded: true`），所以上游对任何推理请求回 403 引导升级——这是账号额度状态，
+不是插件缺陷；换一个有额度的账号即可出字。
+
+## 自动化验证
+
+- `gofmt -l` 干净、`go vet ./...` 干净、`go test ./... -count=1` 全绿（含新增回归测试）。
+- 真实宿主集成冒烟 11/11 通过（加载/模型/账号/上游清单/额度/刷新/签到/非流式/流式/无泄漏/无 panic）。
+
+## 行为说明（用户需要知道的）
+
+- 多账号导出文件被 CPA 标记为“插件虚拟账号”：不能在面板单独编辑/删除，刷新也不会写回该文件；
+  单账号导出在首次成功刷新后会被 CPA 改写成本插件扁平格式（一条账号一个文件）。
+- 国际版账号：无每日签到；额度与计费走 `openapi.qoder.sh`。
+- 插件状态目录默认 `~/.qoder2api-plugin`（`machine_salt`、`state.json`、可选日志）。
+  本轮测试写入的临时设置（auto_checkin）已恢复默认，测试用账号记录已清理，原文件备份为
+  `state.json.bak-before-cleanup`。
+
+## 未验证
+
+- 付费模型（`qmodel_38max` / `dmodel` / `gmodel` 等）的成功推理：该账号 Free 计划额度 0，
+  上游一律 403 `code 112`（pricingUrl）；**免费模型 `qfmodel` 已实测成功**。
+- 签到**成功领取**（国际版无签到计划，返回 `no_campaign`）。
+- 多账号同时故障转移；Windows/macOS 构建。
+- Codex（`/v1/responses`）协议的真实流式：分帧已按宿主契约实现并有单测，
+  但本轮只对 OpenAI 与 Claude 两条协议做了真实客户端验证。
