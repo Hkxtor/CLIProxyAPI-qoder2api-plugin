@@ -141,6 +141,20 @@ POST /v0/management/plugin-store/qoder2api/install?source=source-94348b6b9bec
 落盘文件 sha256 == Release 裸产物 sha256（18d287a4ea4aec5074a8…）
 ```
 
+### 生产实例已切换到商店安装（2026-09-25）
+
+- `plugins.store-sources` 指向本仓库 `registry.json`；原手动装的 `plugins/qoder2api.so`（v0.1.0）
+  已移到 `CLIProxyAPI/plugins-backup/`（未删除，可回滚）。
+- 商店落点 `plugins/linux/amd64/qoder2api-v0.1.1.so`，sha256 与 Release 裸产物一致
+  （`18d287a4ea4aec5074a8…`）。
+- 重启后：`plugin loaded version=0.1.1`、19 个 `qoder-*` 模型、1 个账号、
+  真实调用 200（免费模型排队 102 秒后成功）、管理页 200、panic 计 0。
+- 商店视图：`installed_version=v0.1.1`、`update_available=False`。
+
+⚠️ 踩的坑（已修复，供后续参考）：第一次改生产配置时把 `store-sources` 写成了顶格缩进，
+YAML 解析失败（`line 114: did not find expected '-' indicator`）导致宿主起不来，停机约 2 分钟。
+教训：**改生产 YAML 后必须先过一遍解析器再重启**，`config.yaml` 的 `plugins` 子键要缩进 2 空格。
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：
