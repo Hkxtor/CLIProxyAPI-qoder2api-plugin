@@ -263,8 +263,19 @@ flow`（上游网络不可达）——与插件无关。
   因为执行路径先 `stripModelPrefix` 再查表；现在带前缀键按裸键登记，且**优先于内置别名**；
 - 管理页模型表改为「注册 ID（模型名）| 上游 SKU | 上下文 | 最大输出」。
 
-**兼容性**：旧 ID（`qoder-qfmodel`、`qoder-qmodel_latest`）**保持可用**（裸 SKU 直通上游），
-只是不再出现在模型列表里 —— 从旧版升级不需要改客户端配置。
+**兼容性（实测边界，务必按这个说）**：插件侧仍认旧 SKU（`qfmodel` 直通上游），但**宿主的模型路由表
+只含新 ID**，所以旧 ID 在宿主层就被拒：
+
+```text
+POST /v1/chat/completions {"model":"qoder-qfmodel"}
+  → 400 {"error":{"message":"unknown provider for model qoder-qfmodel","code":"model_not_found"}}
+POST /v1/chat/completions {"model":"qoder-Qwen3.8-Flash"}
+  → 200 内容="好" 模型回显=Qwen3.8-Flash
+     插件日志: upstream queues model qfmodel (p3); waiting 30s … → [Chat] 完成 finish=stop
+```
+
+也就是说：**升级后客户端要改模型名**（对照表见 README）。需要兼容旧名字时用宿主的
+`oauth-model-alias`（`name: <新模型ID>` / `alias: <旧名字>`）逐条指过去。
 
 **测试**：`TestModelIDsUseHumanReadableNames`（ID 是名称 + Name 保留 SKU + 名称/SKU/关键字三种
 请求都能还原）、`TestUserMappingOverridesDisplayAlias`（带前缀映射键生效且优先于内置别名）、
