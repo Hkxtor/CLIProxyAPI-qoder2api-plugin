@@ -97,14 +97,73 @@ func loadedConfig() pluginConfig {
 
 func storeConfig(cfg pluginConfig) { currentConfig.Store(&cfg) }
 
+// listValuedConfigKeys 是"可以用 YAML 列表写法"的配置键。
+//
+// 宿主的 PATCH 接口按 ConfigFieldTypeString 存字符串，但运维手写 config.yaml 时
+// 写成块列表（`- item`）或流式列表（`[a, b]`）都很自然 —— 这两种写法以前会被
+// **静默忽略**（配置写进去了、插件看不见），这里在解析前统一归一化。
+var listValuedConfigKeys = map[string]bool{
+	"extra_models": true,
+}
+
+// normalizeListConfigLines 把列表写法归一化成标量行，便于后续逐行解析：
+//
+//	extra_models:          extra_models: a,b
+//	- a              →
+//	- b
+//
+// 不属于列表字段的 `- ` 行原样保留（后续会因不是 key: value 而忽略）。
+func normalizeListConfigLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	index := -1
+	key := ""
+	items := make([]string, 0, 4)
+	flush := func() {
+		if index >= 0 && len(items) > 0 {
+			out[index] = key + ": " + strings.Join(items, ",")
+		}
+		index, key, items = -1, "", nil
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "-" || strings.HasPrefix(trimmed, "-") {
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			if index >= 0 && listValuedConfigKeys[key] && item != "" {
+				items = append(items, strings.Trim(item, "\"'"))
+				continue
+			}
+		}
+		lineKey, _, ok := splitConfigLine(line)
+		if !ok {
+			// 非键值行：如果它属于列表字段，已经在上面被吃掉了。
+			out = append(out, line)
+			continue
+		}
+		flush()
+		index, key = len(out), lineKey
+		out = append(out, line)
+	}
+	flush()
+	return out
+}
+
+// stripInlineList 处理流式列表写法 `[a, b]`，返回待拆分的 `a, b`。
+func stripInlineList(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		return trimmed[1 : len(trimmed)-1]
+	}
+	return trimmed
+}
+
 // decodeConfig 解析宿主传入的配置 YAML。
-// 支持 `key: value` 标量行、# 注释、单双引号字符串；嵌套块暂不需要。
+// 支持 `key: value` 标量行、# 注释、单双引号字符串、列表字段的块/流式写法；嵌套块暂不需要。
 func decodeConfig(raw []byte) (pluginConfig, error) {
 	cfg := defaultPluginConfig()
 	if len(raw) == 0 {
 		return cfg, nil
 	}
-	for lineNo, line := range strings.Split(string(raw), "\n") {
+	for lineNo, line := range normalizeListConfigLines(strings.Split(string(raw), "\n")) {
 		key, value, ok := splitConfigLine(line)
 		if !ok {
 			continue
@@ -124,7 +183,7 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 		case configKeyModelPrefix:
 			cfg.ModelPrefix = strings.TrimSpace(value)
 		case "extra_models":
-			cfg.ExtraModels = splitList(value)
+			cfg.ExtraModels = splitList(stripInlineList(value))
 		case "log_level":
 			if strings.TrimSpace(value) != "" {
 				cfg.LogLevel = strings.ToLower(strings.TrimSpace(value))
@@ -267,7 +326,8 @@ func splitList(value string) []string {
 	out := make([]string, 0, len(fields))
 	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
-		item := strings.TrimSpace(field)
+		// 顺手剥掉引号：`["a", 'b']` 这种 YAML 写法会把引号带进来。
+		item := strings.Trim(strings.TrimSpace(field), "\"'")
 		if item == "" {
 			continue
 		}

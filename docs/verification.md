@@ -238,6 +238,23 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### v0.1.5：修掉"配了不生效"（YAML 列表写法的 extra_models 被静默忽略）
+
+v0.1.4 实测时踩到：通过宿主 PATCH 传数组（`{"extra_models": ["qfmodel"]}`）会被写成 YAML 块列表
+
+```yaml
+extra_models:
+- qfmodel
+```
+
+而插件自己的配置解析器只认标量行（`key: value`），`- qfmodel` 这种续行被直接跳过 →
+**宿主面板显示配置已保存，插件却什么都没注册**，没有任何报错。反过来用字符串
+`{"extra_models": "qfmodel"}` 立刻生效（`registered_models` 19 → 20，`/v1/models` 出现 `qoder-qfmodel`）。
+
+修复：解析前归一化列表写法（块列表 / 缩进块列表 / 流式 `[a, b]`），并剥掉条目上的引号。
+回归测试 `TestDecodeConfigAcceptsYAMLListForms` 覆盖 8 种写法，含"列表字段后面还有其它键"
+（防续行收集吃掉后续配置）。
+
 ### v0.1.4：旧模型 ID 的兼容开关（extra_models）
 
 v0.1.3 上线后实测确认：宿主的路由表只认插件注册的 ID，所以旧 ID（`qoder-qfmodel`）会被宿主

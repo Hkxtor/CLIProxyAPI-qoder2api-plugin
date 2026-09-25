@@ -171,3 +171,41 @@ func TestEnsureMachineSaltHonorsOverride(t *testing.T) {
 		t.Error("override should not write a salt file")
 	}
 }
+
+// TestDecodeConfigAcceptsYAMLListForms 固化一个踩过的坑：
+// `extra_models` 写成 YAML 列表（块列表或流式列表）时以前会被静默忽略 ——
+// 宿主面板里显示配置已保存，插件却看不到，于是"配了不生效"。
+// （真实复现：PATCH 传数组 → 宿主写成块列表 → 插件不再注册旧模型 ID。）
+func TestDecodeConfigAcceptsYAMLListForms(t *testing.T) {
+	forms := map[string]string{
+		"标量字符串":    "extra_models: qfmodel,gmodel\n",
+		"标量带空格":    "extra_models: qfmodel gmodel\n",
+		"块列表":      "extra_models:\n- qfmodel\n- gmodel\n",
+		"缩进块列表":    "extra_models:\n  - qfmodel\n  - gmodel\n",
+		"块列表带引号":   "extra_models:\n  - \"qfmodel\"\n  - 'gmodel'\n",
+		"流式列表":     "extra_models: [qfmodel, gmodel]\n",
+		"流式列表带引号":  "extra_models: [\"qfmodel\", 'gmodel']\n",
+		"列表后续跟其它键": "extra_models:\n- qfmodel\n- gmodel\nregion: cn\n",
+	}
+	for name, raw := range forms {
+		cfg, errDecode := decodeConfig([]byte(raw))
+		if errDecode != nil {
+			t.Fatalf("%s: decodeConfig: %v", name, errDecode)
+		}
+		if len(cfg.ExtraModels) != 2 || cfg.ExtraModels[0] != "qfmodel" || cfg.ExtraModels[1] != "gmodel" {
+			t.Fatalf("%s: ExtraModels = %v, want [qfmodel gmodel]", name, cfg.ExtraModels)
+		}
+	}
+
+	// 列表字段后面的其它键仍要正常解析（不能被续行收集吃掉）。
+	cfg, errDecode := decodeConfig([]byte("region: cn\nextra_models:\n- qfmodel\nlog_level: debug\nqueue_max_waits: 1\n"))
+	if errDecode != nil {
+		t.Fatalf("decodeConfig: %v", errDecode)
+	}
+	if cfg.Region != qoder.NormalizeRegion("cn") || cfg.LogLevel != "debug" || cfg.QueueMaxWaits != 1 {
+		t.Fatalf("列表字段之后的键被破坏: region=%v log_level=%q queue_max_waits=%d", cfg.Region, cfg.LogLevel, cfg.QueueMaxWaits)
+	}
+	if len(cfg.ExtraModels) != 1 || cfg.ExtraModels[0] != "qfmodel" {
+		t.Fatalf("ExtraModels = %v", cfg.ExtraModels)
+	}
+}

@@ -289,7 +289,9 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   不与实时清单做同名去重）：
 
   ```yaml
-  extra_models: ["qfmodel", "qmodel_38max"]   # 于是 qoder-qfmodel / qoder-qmodel_38max 又能用了
+  extra_models: "qfmodel,qmodel_38max"   # 于是 qoder-qfmodel / qoder-qmodel_38max 又能用了
+  # YAML 列表写法也可以（v0.1.5 起）：
+  # extra_models: ["qfmodel", "qmodel_38max"]
   ```
   这类 ID 会以旧名字出现在 `/v1/models` 里（列表里会同时有新名字与旧名字）——要干净就只留新名字。
 - 新旧对照（国际版实时清单）：`qfmodel → qoder-Qwen3.8-Flash`、`qmodel_38max → qoder-Qwen3.8-Max`、
