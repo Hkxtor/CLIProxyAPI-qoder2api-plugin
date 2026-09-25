@@ -113,6 +113,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh 需要 git 仓库上下文（否则报 “not a git repository”）；
+      # 即使命令里给了 --repo，留着 checkout 也让行为更稳。
+      - uses: actions/checkout@v4
+
       - name: 下载全部平台产物
         uses: actions/download-artifact@v4
         with:
@@ -135,6 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --generate-notes \
             --verify-tag \
