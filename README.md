@@ -285,8 +285,13 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
 - ⚠️ **模型 ID 变了，客户端要跟着改**：升级后请把客户端里的 `qoder-qfmodel` 换成 `qoder-Qwen3.8-Flash`
   （对照表见下）。插件内部仍认旧 SKU（`qfmodel` 直通上游），但**宿主的路由表里只有新 ID**，
   所以拿旧 ID 请求会在宿主层就被拒：`400 unknown provider for model qoder-qfmodel`。
-  如果你有写死旧 ID 的客户端不方便改，可以用宿主的 `oauth-model-alias` 把旧名字指到新模型
-  （每个模型一条：`name: qoder-Qwen3.8-Flash` / `alias: qoder-qfmodel`）。
+  **不想改客户端**的话，把旧名字加进插件配置 `extra_models` 就能恢复（`extra_models` 是运维显式声明，
+  不与实时清单做同名去重）：
+
+  ```yaml
+  extra_models: ["qfmodel", "qmodel_38max"]   # 于是 qoder-qfmodel / qoder-qmodel_38max 又能用了
+  ```
+  这类 ID 会以旧名字出现在 `/v1/models` 里（列表里会同时有新名字与旧名字）——要干净就只留新名字。
 - 新旧对照（国际版实时清单）：`qfmodel → qoder-Qwen3.8-Flash`、`qmodel_38max → qoder-Qwen3.8-Max`、
   `qmodel_latest → qoder-Qwen3.7-Max`、`qmodel → qoder-Qwen3.7-Plus`、`kmodel_latest → qoder-Kimi-K3`、
   `kmodel → qoder-Kimi-K2.8-Preview`、`gmodel → qoder-GLM-5.3`、`gfmodel → qoder-GLM-5.3-Flash`、

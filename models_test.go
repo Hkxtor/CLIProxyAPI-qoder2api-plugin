@@ -61,9 +61,20 @@ func TestBuildModelCatalogPrefixesAndDeduplicates(t *testing.T) {
 	if live.Thinking == nil {
 		t.Fatal("reasoning model should expose thinking support")
 	}
-	// 裸 SKU 不再作为注册 ID（extra_models 里的 gmodel 与实时清单是同一个上游 SKU）。
-	if _, ok := byID["qo-gmodel"]; ok {
-		t.Fatalf("裸 SKU ID 不应再注册: %v", keysOfModelInfo(catalog))
+	// extra_models 是运维显式声明：即使与实时清单是同一个上游 SKU（gmodel）也照注册，
+	// 这样才能用 `extra_models: ["qfmodel"]` 把旧版模型 ID 找回来。
+	if _, ok := byID["qo-gmodel"]; !ok {
+		t.Fatalf("extra_models 声明的模型应注册: %v", keysOfModelInfo(catalog))
+	}
+	// 而实时清单与兜底清单之间的 SKU 去重仍要生效（kmodel 在两边都有，只注册一次）。
+	kmodelCount := 0
+	for _, model := range catalog {
+		if model.Name == "kmodel" {
+			kmodelCount++
+		}
+	}
+	if kmodelCount != 1 {
+		t.Fatalf("同一上游 SKU 被重复注册 %d 次: %v", kmodelCount, keysOfModelInfo(catalog))
 	}
 	// 未启用的上游模型不注册。
 	if _, ok := byID["qo-disabled-sku"]; ok {
@@ -238,9 +249,11 @@ func TestModelIDsUseHumanReadableNames(t *testing.T) {
 
 	// 2) 客户端拿注册 ID 请求时必须还原成上游 SKU。
 	cases := map[string]string{
-		"Qwen3.8-Max":       "qmodel_38max",
-		"Qwen3.8-Flash":     "qfmodel",
-		"qmodel_38max":      "qmodel_38max", // 旧 ID（上游 SKU）保持可用
+		"Qwen3.8-Max":   "qmodel_38max",
+		"Qwen3.8-Flash": "qfmodel",
+		// 插件侧仍能把旧 ID（上游 SKU）还原；但宿主路由表只含注册 ID，
+		// 所以要用旧 ID 得在 extra_models 里显式声明（见下个用例）。
+		"qmodel_38max":      "qmodel_38max",
 		"qfmodel":           "qfmodel",
 		"Kimi-K3":           "kmodel_latest", // 静态兜底别名
 		"claude-sonnet-4-5": "gmodel",        // 内置关键字映射仍然生效
@@ -282,5 +295,37 @@ func TestUserMappingOverridesDisplayAlias(t *testing.T) {
 	// 另一个模型不受影响，仍走内置别名。
 	if got := bridge.MapModel("", "GLM-5.3"); got != "gmodel" {
 		t.Fatalf("其它模型的内置别名被破坏: %q", got)
+	}
+}
+
+// TestExtraModelsCanRestoreLegacySKUIds 固化"旧 ID 兼容开关"：
+// 宿主的路由表只认插件注册的 ID，所以想继续用 qoder-qfmodel 这类旧名字，
+// 必须让插件显式把它注册回来。extra_models 是运维声明，不与实时清单做 SKU 去重。
+func TestExtraModelsCanRestoreLegacySKUIds(t *testing.T) {
+	installFakeHost(t)
+	cfg := setupTestPlugin(t, func(cfg *pluginConfig) {
+		cfg.ExtraModels = []string{"qfmodel", "gmodel"}
+	})
+	if errStore := storeCachedModels([]cachedModel{
+		{Key: "qfmodel", DisplayName: "Qwen3.8-Flash", Enable: true},
+		{Key: "gmodel", DisplayName: "GLM-5.3", Enable: true},
+	}, "global"); errStore != nil {
+		t.Fatalf("storeCachedModels: %v", errStore)
+	}
+
+	ids := map[string]bool{}
+	for _, model := range buildModelCatalog(cfg) {
+		ids[model.ID] = true
+	}
+	// 新 ID（模型名）与旧 ID（SKU）同时可用。
+	for _, want := range []string{"qoder-Qwen3.8-Flash", "qoder-GLM-5.3", "qoder-qfmodel", "qoder-gmodel"} {
+		if !ids[want] {
+			t.Fatalf("缺少 %q：%v", want, keysOfModelInfo(buildModelCatalog(cfg)))
+		}
+	}
+	// 旧 ID 在插件侧要能还原成上游 SKU。
+	applyModelMappings(cfg)
+	if got := bridge.MapModel("", "qfmodel"); got != "qfmodel" {
+		t.Fatalf("旧 ID 未直通上游 SKU: %q", got)
 	}
 }

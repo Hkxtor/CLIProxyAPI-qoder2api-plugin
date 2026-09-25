@@ -91,12 +91,12 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 	// 裸 SKU（如 gmodel）。只按 ID 去重的话，同一个上游 SKU 会以两个 ID 注册（
 	// qoder-GLM-5.3 与 qoder-gmodel），客户端下拉里就会出现重复模型。
 	registeredSKU := map[string]string{}
-	add := func(info pluginapi.ModelInfo) {
+	addInternal := func(info pluginapi.ModelInfo, force bool) {
 		id := strings.TrimSpace(info.ID)
 		if id == "" {
 			return
 		}
-		if sku := strings.TrimSpace(info.Name); sku != "" {
+		if sku := strings.TrimSpace(info.Name); sku != "" && !force {
 			if existing, seen := registeredSKU[sku]; seen && existing != id {
 				return
 			}
@@ -121,6 +121,11 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 		}
 		catalog[id] = entry{info: info}
 	}
+	// add 按上游 SKU 去重；addForced 用于 extra_models：那是运维显式声明的 ID，
+	// 即使与实时清单是同一个上游 SKU（如 gmodel）也应照注册，这样才能拿它
+	// 恢复旧版 ID（extra_models: ["qfmodel"] → qoder-qfmodel 又能用）。
+	add := func(info pluginapi.ModelInfo) { addInternal(info, false) }
+	addForced := func(info pluginapi.ModelInfo) { addInternal(info, true) }
 
 	prefix := cfg.ModelPrefix
 
@@ -180,10 +185,11 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 
 	// 4) 用户额外声明的模型 ID（不含前缀，按关键字映射走）。
 	for _, extra := range cfg.ExtraModels {
-		add(pluginapi.ModelInfo{
-			ID:                        prefix + strings.TrimSpace(extra),
-			Name:                      strings.TrimSpace(extra),
-			DisplayName:               strings.TrimSpace(extra),
+		name := strings.TrimSpace(extra)
+		addForced(pluginapi.ModelInfo{
+			ID:                        prefix + name,
+			Name:                      name,
+			DisplayName:               firstNonEmpty(bundledSKUDisplayNames[name], name),
 			Description:               "由 extra_models 配置注册",
 			ContextLength:             defaultContextWindow,
 			MaxCompletionTokens:       defaultMaxOutputTokens,

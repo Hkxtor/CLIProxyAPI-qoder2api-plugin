@@ -238,6 +238,19 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### v0.1.4：旧模型 ID 的兼容开关（extra_models）
+
+v0.1.3 上线后实测确认：宿主的路由表只认插件注册的 ID，所以旧 ID（`qoder-qfmodel`）会被宿主
+直接拒掉。v0.1.4 给运维一个插件内的开关——`extra_models` 是显式声明，不与实时清单做同名去重：
+
+```yaml
+extra_models: ["qfmodel"]   # → qoder-qfmodel 重新出现在 /v1/models 并可调用
+```
+
+去重规则由此精确化：**实时清单 ↔ 兜底清单**之间按上游 SKU 去重（同一模型不重复出现），
+**extra_models** 例外（运维说了算）。回归测试：`TestExtraModelsCanRestoreLegacySKUIds`
+与 `TestBuildModelCatalogPrefixesAndDeduplicates` 里的 SKU 计数断言。
+
 ### v0.1.3：模型 ID 改用人类可读模型名
 
 **用户需求**：客户端/面板里"直接显示模型名称而不是 qoder 中的模型 ID"。
