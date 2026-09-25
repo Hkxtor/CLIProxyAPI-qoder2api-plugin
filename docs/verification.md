@@ -238,6 +238,28 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### 模型目录的刷新时机（实测，别猜）
+
+宿主只在**插件加载/重载**时拉取插件模型清单，改配置不会立即刷新目录：
+
+```text
+PATCH /v0/management/plugins/qoder2api/config {"extra_models": ""}   → 200
+GET /v1/models  （未重启）                                            → 仍 21 项，仍含 qoder-qfmodel / qoder-qmodel_38max
+重启宿主                                                              → 19 项，旧 ID 消失
+```
+
+**最终生产状态**（v0.1.5，`extra_models` 为空）：19 项，全部是模型名，除 `qoder-q37fmodel` /
+`qoder-gm51model`（上游实时清单里没有这两个 SKU 的名称，不编造）。
+
+端到端实测（同一账号、同一时段）：
+
+```text
+qoder-Qwen3.8-Flash → 200 内容="好" 回显=Qwen3.8-Flash (2s)
+qoder-qfmodel       → 200 内容="好" 回显=qfmodel        (67s，含排队)
+```
+
+第二条是把旧 ID 临时写进 `extra_models` 时跑的，证明兼容开关确实贯通到上游；随后已清空。
+
 ### v0.1.5：修掉"配了不生效"（YAML 列表写法的 extra_models 被静默忽略）
 
 v0.1.4 实测时踩到：通过宿主 PATCH 传数组（`{"extra_models": ["qfmodel"]}`）会被写成 YAML 块列表

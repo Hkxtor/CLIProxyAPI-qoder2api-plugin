@@ -285,8 +285,8 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
 - ⚠️ **模型 ID 变了，客户端要跟着改**：升级后请把客户端里的 `qoder-qfmodel` 换成 `qoder-Qwen3.8-Flash`
   （对照表见下）。插件内部仍认旧 SKU（`qfmodel` 直通上游），但**宿主的路由表里只有新 ID**，
   所以拿旧 ID 请求会在宿主层就被拒：`400 unknown provider for model qoder-qfmodel`。
-  **不想改客户端**的话，把旧名字加进插件配置 `extra_models` 就能恢复（`extra_models` 是运维显式声明，
-  不与实时清单做同名去重）：
+  **不想改客户端**的话，把旧名字加进插件配置 `extra_models` 就能恢复 —— 这是**可选**开关，默认不注册
+  任何旧 ID（`extra_models` 是运维显式声明，不与实时清单做同名去重；改完记得重启宿主）：
 
   ```yaml
   extra_models: "qfmodel,qmodel_38max"   # 于是 qoder-qfmodel / qoder-qmodel_38max 又能用了
@@ -298,7 +298,9 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   `qmodel_latest → qoder-Qwen3.7-Max`、`qmodel → qoder-Qwen3.7-Plus`、`kmodel_latest → qoder-Kimi-K3`、
   `kmodel → qoder-Kimi-K2.8-Preview`、`gmodel → qoder-GLM-5.3`、`gfmodel → qoder-GLM-5.3-Flash`、
   `dmodel → qoder-DeepSeek-V4-Pro`、`dfmodel → qoder-DeepSeek-Flash`、`mmodel → qoder-MiniMax-M3`、
-  `auto/ultimate/performance/efficient → qoder-Auto` 等；`q37fmodel`、`gm51model` 上游没给名称，仍以 SKU 形式注册。
+  `auto/ultimate/performance/efficient → qoder-Auto` 等。注意 `q37fmodel`、`gm51model` 上游没给名称，
+  所以列表里仍显示 SKU 形式（不编造名称）；`ultimate/performance/efficient` 属于未开通档位（上游标
+  `enable=false`），本插件不注册。
 - 模型来源按优先级：**上游实时清单**（含 display_name、上下文窗口、推理标记）→ 内置兜底 SKU →
   人类可读别名（`claude-sonnet`、`claude-opus`、`claude-haiku`、`gpt`、`gemini`）→ `extra_models`。
   同一个上游 SKU 只注册一次，不会因为写法和来源不同在列表里出现两次。
@@ -306,7 +308,8 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   配置 `model_mapping: "sonnet=qmodel_38max"` 后，含 `sonnet` 的请求会走 `qmodel_38max`。
   映射键写成带前缀的 `qoder-Qwen3.8-Flash=...` 也生效（等于写模型的完整 ID），且优先于内置的模型名别名。
 - 想刷到最新模型清单：管理页点“刷新模型”，或 `POST /v0/management/plugins/qoder2api/models/refresh`。
-  刷完之后注册 ID 会跟着上游名称变，无需重启（宿主会重新拉取模型列表）。
+  ⚠️ 清单或模型 ID 变化后**要重启宿主**才会体现在 `/v1/models` 里 —— 实测：把 `extra_models` 清空后
+  宿主的模型目录仍是 21 项（含两个旧 ID），重启后回到 19 项。宿主只在插件加载/重载时拉取模型清单。
 
 ## 客户端接入
 
