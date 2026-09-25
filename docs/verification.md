@@ -229,6 +229,12 @@ GET /v0/management/get-auth-status?state=<state>  → 200 {"status":"wait"} ×4
 `antigravity-auth-url` 全部 200，`xai-auth-url` 500 且原因是 `failed to start device authorization
 flow`（上游网络不可达）——与插件无关。
 
+**用户侧复验**：v0.1.2 发布后用户在其生产环境实测通过面板 OAuth 登录。
+
+**本工作实例的边界**：本机实例上我只验证到 `start → 200`（含 PKCE 参数与区域覆盖）与
+`get-auth-status → wait`（插件确实打了真实上游），未在本机完成一次真实浏览器授权
+（我发出的链接在 10 分钟窗口内未完成授权，无新增账号落盘，属预期）。
+
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
