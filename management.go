@@ -161,7 +161,7 @@ func buildStatusPayload() statusPayload {
 			"is_reasoning":   model.IsReasoning,
 			"context_window": model.ContextWindow,
 			"max_output":     model.MaxOutputTokens,
-			"registered_id":  cfg.ModelPrefix + model.Key,
+			"registered_id":  modelRegistrationID(cfg.ModelPrefix, model.Key, model.DisplayName),
 			"enable":         model.Enable,
 		})
 	}

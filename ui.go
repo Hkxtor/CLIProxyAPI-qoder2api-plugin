@@ -98,7 +98,7 @@ const consolePageTemplate = `<!DOCTYPE html>
   <h2 style="margin-top:0">上游模型清单（实时缓存）</h2>
   <div class="muted" id="models-meta"></div>
   <table>
-    <thead><tr><th>上游 key</th><th>显示名</th><th>上下文</th><th>最大输出</th><th>注册 ID</th></tr></thead>
+    <thead><tr><th>注册 ID（模型名）</th><th>上游 SKU</th><th>上下文</th><th>最大输出</th></tr></thead>
     <tbody id="models"></tbody>
   </table>
 </div>
@@ -343,11 +343,10 @@ const consolePageTemplate = `<!DOCTYPE html>
       : '尚未拉取实时清单：当前使用内置兜底 SKU 列表。点击上方「从上游刷新模型清单」。');
     for (const model of status.model_preview || []) {
       tbody.appendChild(row([
+        model.registered_id || '',
         model.key,
-        model.display_name || '',
         model.context_window || '',
         model.max_output || '',
-        model.registered_id || '',
       ]));
     }
   }

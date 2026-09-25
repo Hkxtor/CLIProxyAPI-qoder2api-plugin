@@ -238,6 +238,38 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### v0.1.3：模型 ID 改用人类可读模型名
+
+**用户需求**：客户端/面板里"直接显示模型名称而不是 qoder 中的模型 ID"。
+
+**证据**：宿主的插件模型条目**不带** `display_name`（实测 `/v1/models` 只有
+`created/id/object/owned_by`），所以可读性只能体现在模型 ID 本身：
+
+```text
+上游实时清单（国际版, 2026-09-25）：
+  qmodel_38max → Qwen3.8-Max      qfmodel → Qwen3.8-Flash
+  qmodel_latest → Qwen3.7-Max     qmodel  → Qwen3.7-Plus
+  kmodel_latest → Kimi-K3         kmodel  → Kimi-K2.8-Preview
+  gmodel → GLM-5.3                gfmodel → GLM-5.3-Flash
+  dmodel → DeepSeek-V4-Pro        dfmodel → DeepSeek-Flash
+  mmodel → MiniMax-M3             auto/ultimate/performance/efficient
+```
+
+**改动**：
+- 注册 ID = `model_prefix` + display_name（拿不到名称的 SKU 才退回 SKU，不编名字）；
+- `Name` 字段仍保留上游 SKU，执行时通过内置别名表 `名 → SKU` 还原（`Qwen3.8-Flash` → `qfmodel`）；
+- 模型目录**按上游 SKU 去重**：否则 `extra_models: [gmodel]` 与实时清单会以两个 ID 注册同一个 SKU；
+- 修掉一个既有缺陷：`model_mapping` 里写带前缀的键（`qoder-qfmodel: xxx`）以前永远匹配不上，
+  因为执行路径先 `stripModelPrefix` 再查表；现在带前缀键按裸键登记，且**优先于内置别名**；
+- 管理页模型表改为「注册 ID（模型名）| 上游 SKU | 上下文 | 最大输出」。
+
+**兼容性**：旧 ID（`qoder-qfmodel`、`qoder-qmodel_latest`）**保持可用**（裸 SKU 直通上游），
+只是不再出现在模型列表里 —— 从旧版升级不需要改客户端配置。
+
+**测试**：`TestModelIDsUseHumanReadableNames`（ID 是名称 + Name 保留 SKU + 名称/SKU/关键字三种
+请求都能还原）、`TestUserMappingOverridesDisplayAlias`（带前缀映射键生效且优先于内置别名）、
+目录去重用例（裸 SKU ID 不再注册、同一 SKU 不重复）。
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：

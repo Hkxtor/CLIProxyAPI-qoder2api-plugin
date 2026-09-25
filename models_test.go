@@ -50,24 +50,33 @@ func TestBuildModelCatalogPrefixesAndDeduplicates(t *testing.T) {
 		byID[model.ID] = model
 	}
 
-	// 实时清单优先：使用上游 display_name / 上下文窗口。
-	live, ok := byID["qo-gmodel"]
+	// 实时清单优先：注册 ID 用上游人类可读名，元数据（上下文/推理）保留。
+	live, ok := byID["qo-Performance"]
 	if !ok {
 		t.Fatalf("cached live model missing: %v", keysOfModelInfo(catalog))
 	}
-	if live.DisplayName != "Performance" || live.ContextLength != 180000 || live.MaxCompletionTokens != 32768 {
+	if live.Name != "gmodel" || live.DisplayName != "Performance" || live.ContextLength != 180000 || live.MaxCompletionTokens != 32768 {
 		t.Fatalf("live model metadata lost: %+v", live)
 	}
 	if live.Thinking == nil {
 		t.Fatal("reasoning model should expose thinking support")
 	}
+	// 裸 SKU 不再作为注册 ID（extra_models 里的 gmodel 与实时清单是同一个上游 SKU）。
+	if _, ok := byID["qo-gmodel"]; ok {
+		t.Fatalf("裸 SKU ID 不应再注册: %v", keysOfModelInfo(catalog))
+	}
 	// 未启用的上游模型不注册。
 	if _, ok := byID["qo-disabled-sku"]; ok {
 		t.Fatal("disabled upstream model must not be registered")
 	}
-	// 兜底 SKU 与实时清单共存（kmodel 同时在两边出现，只注册一次）。
+	// 兜底 SKU 与实时清单共存（kmodel 同时在两边出现、且上游没给 display_name，
+	// 所以注册 ID 仍是 SKU 形式）。
 	if _, ok := byID["qo-kmodel"]; !ok {
 		t.Fatal("kmodel missing")
+	}
+	// 兜底清单里有名称的 SKU 用名称注册（拿不到实时清单时才走这条路）。
+	if _, ok := byID["qo-Qwen3.8-Max"]; !ok {
+		t.Fatalf("bundled SKU 应用人类可读名注册: %v", keysOfModelInfo(catalog))
 	}
 	// 别名与 extra_models 都带前缀。
 	if _, ok := byID["qo-claude-sonnet"]; !ok {
@@ -120,7 +129,7 @@ func TestBuildModelCatalogFallsBackWithoutLiveData(t *testing.T) {
 	}
 	found := false
 	for _, model := range catalog {
-		if model.ID == cfg.ModelPrefix+"auto" {
+		if model.ID == cfg.ModelPrefix+"Auto" {
 			found = true
 		}
 	}
@@ -176,4 +185,102 @@ func keysOfModelInfo(models []pluginapi.ModelInfo) []string {
 		out = append(out, model.ID)
 	}
 	return out
+}
+
+// TestModelIDsUseHumanReadableNames 固化"客户端看到模型名而非上游 SKU"这个需求：
+// CPA 的 /v1/models 只暴露模型 ID（宿主不给插件模型带 display_name），
+// 所以可读性必须体现在 ID 本身，并且执行时能被还原成上游认识的 SKU。
+func TestModelIDsUseHumanReadableNames(t *testing.T) {
+	installFakeHost(t)
+	cfg := setupTestPlugin(t)
+	if errStore := storeCachedModels([]cachedModel{
+		{Key: "qmodel_38max", DisplayName: "Qwen3.8-Max", Enable: true, IsReasoning: true},
+		{Key: "qfmodel", DisplayName: "Qwen3.8-Flash", Enable: true},
+		{Key: "gmodel", Enable: true}, // 上游没给名称时退回 SKU
+	}, "global"); errStore != nil {
+		t.Fatalf("storeCachedModels: %v", errStore)
+	}
+	applyModelMappings(cfg)
+
+	ep := func(name string) inspectModelCatalogEntry {
+		catalog := buildModelCatalog(cfg)
+		for _, model := range catalog {
+			if model.ID == cfg.ModelPrefix+name {
+				return inspectModelCatalogEntry{
+					found:       true,
+					sku:         model.Name,
+					displayName: model.DisplayName,
+					thinking:    model.Thinking != nil,
+				}
+			}
+		}
+		return inspectModelCatalogEntry{catalog: keysOfModelInfo(catalog)}
+	}
+
+	// 1) 注册 ID 是模型名。
+	maxModel := ep("Qwen3.8-Max")
+	if !maxModel.found {
+		t.Fatalf("Qwen3.8-Max 未注册: %v", maxModel.catalog)
+	}
+	if maxModel.sku != "qmodel_38max" {
+		t.Fatalf("Name 应保留上游 SKU: %q", maxModel.sku)
+	}
+	if !maxModel.thinking {
+		t.Fatal("推理模型应保留 thinking 支持")
+	}
+	if flash := ep("Qwen3.8-Flash"); !flash.found || flash.sku != "qfmodel" {
+		t.Fatalf("Qwen3.8-Flash 注册错误: %+v", flash)
+	}
+	// 上游没给名称 → 退回 SKU，不编名字。
+	if noName := ep("gmodel"); !noName.found {
+		t.Fatalf("缺少上游名称的模型应退回 SKU 注册: %v", noName.catalog)
+	}
+
+	// 2) 客户端拿注册 ID 请求时必须还原成上游 SKU。
+	cases := map[string]string{
+		"Qwen3.8-Max":       "qmodel_38max",
+		"Qwen3.8-Flash":     "qfmodel",
+		"qmodel_38max":      "qmodel_38max", // 旧 ID（上游 SKU）保持可用
+		"qfmodel":           "qfmodel",
+		"Kimi-K3":           "kmodel_latest", // 静态兜底别名
+		"claude-sonnet-4-5": "gmodel",        // 内置关键字映射仍然生效
+	}
+	for input, want := range cases {
+		if got := bridge.MapModel("", input); got != want {
+			t.Fatalf("MapModel(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	// 3) 前缀剥离后依然能映射（执行路径就是先 stripModelPrefix）。
+	if got := bridge.MapModel("", stripModelPrefix(cfg.ModelPrefix, cfg.ModelPrefix+"Qwen3.8-Flash")); got != "qfmodel" {
+		t.Fatalf("带前缀的请求未能还原 SKU: %q", got)
+	}
+}
+
+// inspectModelCatalogEntry 是上面用例的取数辅助。
+type inspectModelCatalogEntry struct {
+	found       bool
+	sku         string
+	displayName string
+	thinking    bool
+	catalog     []string
+}
+
+// TestUserMappingOverridesDisplayAlias 用户规则优先于内置别名：
+// 内置只负责"名称 → SKU"的还原，运维想改路由仍应说了算。
+func TestUserMappingOverridesDisplayAlias(t *testing.T) {
+	installFakeHost(t)
+	cfg := setupTestPlugin(t, func(cfg *pluginConfig) {
+		// 带前缀的键也要生效（以前这种写法永远匹配不上）。
+		cfg.ModelMappingRules = map[string]string{"qoder-Qwen3.8-Flash": "qmodel_38max"}
+	})
+	applyModelMappings(cfg)
+
+	if got := bridge.MapModel("", "Qwen3.8-Flash"); got != "qmodel_38max" {
+		t.Fatalf("带前缀的映射键未生效: %q", got)
+	}
+	// 另一个模型不受影响，仍走内置别名。
+	if got := bridge.MapModel("", "GLM-5.3"); got != "gmodel" {
+		t.Fatalf("其它模型的内置别名被破坏: %q", got)
+	}
 }

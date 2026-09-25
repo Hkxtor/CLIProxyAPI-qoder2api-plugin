@@ -277,23 +277,31 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
 
 ## 模型与映射
 
-- 注册的模型 ID = `model_prefix` + 模型名，例如 `qoder-qmodel_latest`。
-- 执行时插件会剥掉前缀再请上游，客户端始终使用带前缀的 ID。
+- 注册的模型 ID = `model_prefix` + **模型名**，例如 `qoder-GLM-5.3`、`qoder-Qwen3.8-Flash`。
+  模型名取自上游实时清单的 display_name，拿不到名称的 SKU（如 `kmodel`）才退回 SKU 本身。
+- **为什么用模型名而不是上游 SKU**：CPA 的 `/v1/models` 与各客户端下拉只暴露模型 ID（宿主不给
+  插件模型带 `display_name` 字段），用 SKU 会让用户看到 `qoder-qmodel_38max` 这种内部代号。
+- 执行时插件会剥掉前缀，把模型名还原成上游 SKU（`Qwen3.8-Flash` → `qfmodel`）再请求上游。
+- **旧 ID 仍然可用**：`qoder-qfmodel`、`qoder-qmodel_38max` 这类上游 SKU 形式的 ID 照旧能调（只是
+  不再出现在模型列表里），所以从 v0.1.2 及更早版本升级不需要改客户端配置。
 - 模型来源按优先级：**上游实时清单**（含 display_name、上下文窗口、推理标记）→ 内置兜底 SKU →
   人类可读别名（`claude-sonnet`、`claude-opus`、`claude-haiku`、`gpt`、`gemini`）→ `extra_models`。
+  同一个上游 SKU 只注册一次，不会因为写法和来源不同在列表里出现两次。
 - 别名是按**关键字**路由到上游 SKU 的（例如 `sonnet` → `gmodel`），可用 `model_mapping` 改：
   配置 `model_mapping: "sonnet=qmodel_38max"` 后，含 `sonnet` 的请求会走 `qmodel_38max`。
+  映射键写成带前缀的 `qoder-Qwen3.8-Flash=...` 也生效（等于写模型的完整 ID），且优先于内置的模型名别名。
 - 想刷到最新模型清单：管理页点“刷新模型”，或 `POST /v0/management/plugins/qoder2api/models/refresh`。
+  刷完之后注册 ID 会跟着上游名称变，无需重启（宿主会重新拉取模型列表）。
 
 ## 客户端接入
 
 CPA 的地址 + 任意 `api-keys` 即可，模型名用带前缀的 ID：
 
 ```bash
-# OpenAI 兼容
+# OpenAI 兼容（模型名用带前缀的模型名，如 qoder-GLM-5.3 / qoder-Qwen3.8-Flash）
 curl http://127.0.0.1:8317/v1/chat/completions \
   -H "Authorization: Bearer <CPA API KEY>" -H "Content-Type: application/json" \
-  -d '{"model":"qoder-qmodel_latest","messages":[{"role":"user","content":"hi"}],"stream":true}'
+  -d '{"model":"qoder-Qwen3.8-Flash","messages":[{"role":"user","content":"hi"}],"stream":true}'
 ```
 
 Claude Code / Codex CLI 等指向 CPA 即可，插件声明了 `chat-completions` / `claude` / `codex`

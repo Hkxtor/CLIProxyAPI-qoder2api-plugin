@@ -32,6 +32,27 @@ var bundledSKUs = []string{
 	"mmodel",
 }
 
+// bundledSKUDisplayNames 是兜底 SKU 的人类可读名，取自国际版实时清单实测值
+// （见 docs/verification.md）。没把握的 SKU 不编名字：宁可用 SKU 当 ID，
+// 也不给客户端看一个猜出来的模型名。
+var bundledSKUDisplayNames = map[string]string{
+	"auto":          "Auto",
+	"ultimate":      "Ultimate",
+	"performance":   "Performance",
+	"efficient":     "Efficient",
+	"qmodel_38max":  "Qwen3.8-Max",
+	"qfmodel":       "Qwen3.8-Flash",
+	"qmodel_latest": "Qwen3.7-Max",
+	"qmodel":        "Qwen3.7-Plus",
+	"kmodel_latest": "Kimi-K3",
+	"kmodel":        "Kimi-K2.8-Preview",
+	"gmodel":        "GLM-5.3",
+	"gfmodel":       "GLM-5.3-Flash",
+	"dmodel":        "DeepSeek-V4-Pro",
+	"dfmodel":       "DeepSeek-Flash",
+	"mmodel":        "MiniMax-M3",
+}
+
 // curatedAlias 是给人类用的别名：名字里的关键字会被 bridge 的关键字映射表
 // （见 internal/bridge/bridge.go 的 defaultModelMapping）翻成上游 SKU。
 // 因此别名表达的是"路由意图"，真实落到哪个 SKU 由 model_mapping 决定。
@@ -66,10 +87,20 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 	}
 	catalog := map[string]entry{}
 	order := make([]string, 0, 32)
+	// 按上游 SKU 去重：模型 ID 现在是人类可读名，而 extra_models / 兜底清单里写的是
+	// 裸 SKU（如 gmodel）。只按 ID 去重的话，同一个上游 SKU 会以两个 ID 注册（
+	// qoder-GLM-5.3 与 qoder-gmodel），客户端下拉里就会出现重复模型。
+	registeredSKU := map[string]string{}
 	add := func(info pluginapi.ModelInfo) {
 		id := strings.TrimSpace(info.ID)
 		if id == "" {
 			return
+		}
+		if sku := strings.TrimSpace(info.Name); sku != "" {
+			if existing, seen := registeredSKU[sku]; seen && existing != id {
+				return
+			}
+			registeredSKU[sku] = id
 		}
 		if _, exists := catalog[id]; exists {
 			return
@@ -99,7 +130,7 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 			continue
 		}
 		info := pluginapi.ModelInfo{
-			ID:                        prefix + model.Key,
+			ID:                        modelRegistrationID(prefix, model.Key, model.DisplayName),
 			Name:                      model.Key,
 			DisplayName:               firstNonEmpty(model.DisplayName, model.Key),
 			Description:               "来自 Qoder 上游实时模型清单",
@@ -114,12 +145,13 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 		add(info)
 	}
 
-	// 2) 兜底 SKU：保证实时清单不可用时也能用（前缀 = 上游 key）。
+	// 2) 兜底 SKU：保证实时清单不可用时也能用。
 	for _, sku := range bundledSKUs {
+		name := firstNonEmpty(bundledSKUDisplayNames[sku], sku)
 		add(pluginapi.ModelInfo{
-			ID:                        prefix + sku,
+			ID:                        prefix + name,
 			Name:                      sku,
-			DisplayName:               sku,
+			DisplayName:               name,
 			Description:               "Qoder 上游 SKU（兜底清单，未与实时清单比对）",
 			ContextLength:             defaultContextWindow,
 			MaxCompletionTokens:       defaultMaxOutputTokens,
@@ -168,17 +200,66 @@ func buildModelCatalog(cfg pluginConfig) []pluginapi.ModelInfo {
 	return ordered
 }
 
+// modelRegistrationID 生成注册给 CPA 的模型 ID：前缀 + 人类可读名。
+//
+// 为什么要用名称而不是上游 SKU：CPA 的 /v1/models 与各客户端下拉只显示模型 ID
+// （宿主的插件模型条目不带 display_name 字段），用 SKU 会让用户看到 qoder-qmodel_38max
+// 这种内部代号。上游请求仍走 SKU，靠 modelAliasMappings 还原。
+func modelRegistrationID(prefix, sku, displayName string) string {
+	return prefix + firstNonEmpty(displayName, sku)
+}
+
+// modelAliasMappings 给出"人类可读名 → 上游 SKU"的内置映射，
+// 让客户端请求 qoder-Qwen3.8-Flash 时能还原成上游认识的 qfmodel。
+// 实时清单优先（上游改名后立即生效），静态表只在没拉过清单时兜底。
+func modelAliasMappings() map[string]string {
+	out := make(map[string]string, len(bundledSKUDisplayNames)+8)
+	for sku, name := range bundledSKUDisplayNames {
+		if strings.TrimSpace(name) != "" {
+			out[strings.TrimSpace(name)] = sku
+		}
+	}
+	for _, model := range cachedModels() {
+		key := strings.TrimSpace(model.Key)
+		name := strings.TrimSpace(model.DisplayName)
+		if key == "" || name == "" {
+			continue
+		}
+		out[name] = key
+	}
+	return out
+}
+
 // applyModelMappings 把配置与页面设置里的映射表注入 bridge 的 MapModel。
 func applyModelMappings(cfg pluginConfig) {
-	// 先放配置里的规则，再用页面设置覆盖：与其它插件一致，
-	// "页面上改过的值"优先于 YAML（否则页面上的修改会被配置悄悄盖掉）。
-	flat := map[string]string{}
-	for key, value := range cfg.ModelMappingRules {
-		flat[key] = value
+	// 顺序即优先级（后写覆盖先写）：
+	//   1) 内置别名：人类可读名 → 上游 SKU（模型 ID 用名称注册，必须能还原）；
+	//   2) YAML 配置规则；
+	//   3) 页面设置——与其它插件一致，"页面上改过的值"优先于 YAML
+	//      （否则页面上的修改会被配置悄悄盖掉）。
+	flat := modelAliasMappings()
+	prefix := strings.TrimSpace(cfg.ModelPrefix)
+	// 用户规则优先于内置别名（内置只负责把模型名还原成 SKU，
+	// 运维想改路由仍应说了算）；`qoder-qfmodel` 这类带前缀的键按裸键处理。
+	applyRules := func(rules map[string]string) {
+		// 先落带前缀的键，再落裸键：两神写法同时出现时裸键优先（随机 map 顺序不影响结果）。
+		for key, value := range rules {
+			if bare, ok := unprefixedMappingKey(key, prefix); ok {
+				flat[bare] = value
+			}
+		}
+		for key, value := range rules {
+			if strings.TrimSpace(key) == "" {
+				continue
+			}
+			if _, prefixed := unprefixedMappingKey(key, prefix); prefixed {
+				continue
+			}
+			flat[key] = value
+		}
 	}
-	for key, value := range stateModelMapping() {
-		flat[key] = value
-	}
+	applyRules(cfg.ModelMappingRules)
+	applyRules(stateModelMapping())
 	if len(flat) == 0 {
 		bridge.SetModelMappingProvider(nil)
 		return
@@ -187,6 +268,16 @@ func applyModelMappings(cfg pluginConfig) {
 	bridge.SetModelMappingProvider(func() (map[string]map[string]string, map[string]string) {
 		return nil, snapshot
 	})
+}
+
+// unprefixedMappingKey 把 `qoder-qfmodel` 这类带前缀的映射键还原成执行路径实际查询的裸键
+// （执行前会先 stripModelPrefix，带前缀的键否则永远匹配不上）。
+func unprefixedMappingKey(key, prefix string) (string, bool) {
+	if prefix == "" || !strings.HasPrefix(key, prefix) {
+		return "", false
+	}
+	bare := strings.TrimSpace(strings.TrimPrefix(key, prefix))
+	return bare, bare != ""
 }
 
 func handleModelStatic(request []byte) ([]byte, error) {
@@ -270,6 +361,8 @@ func refreshModelsFromUpstream(ctx context.Context, callbackID string) (int, err
 		if errStore := storeCachedModels(cached, string(cfg.Region)); errStore != nil {
 			return 0, errStore
 		}
+		// 清单变了，注册 ID（人类可读名）与别名映射都要跟着更新。
+		applyModelMappings(cfg)
 		logger.Info("refreshed %d models from upstream via %s", len(cached), account.Name)
 		return len(cached), nil
 	}

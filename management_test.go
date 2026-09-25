@@ -70,8 +70,12 @@ func TestStatusPayloadNeverLeaksCredentials(t *testing.T) {
 	if payload.ModelCount != 1 || len(payload.ModelPreview) != 1 {
 		t.Fatalf("model summary = %d / %v", payload.ModelCount, payload.ModelPreview)
 	}
-	if !strings.Contains(text, "qoder-gmodel") {
+	// 管理页展示的注册 ID 用人类可读名（而不是上游 SKU）。
+	if !strings.Contains(text, "qoder-Performance") {
 		t.Fatalf("registered id should be shown: %s", text)
+	}
+	if strings.Contains(text, "qoder-gmodel") {
+		t.Fatalf("管理页不应再展示裸 SKU 作为注册 ID: %s", text)
 	}
 }
 
