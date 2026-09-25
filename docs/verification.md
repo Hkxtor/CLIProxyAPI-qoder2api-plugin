@@ -95,6 +95,34 @@
   → 19 个模型 → 1 个账号 → 真实上游调用（免费模型，高峰期排队预算耗尽 → 503 且消息明确
   “不是额度或凭证问题”）→ 进程稳定、无 panic。
 
+### 9. 插件商店（registry 三方源）安装
+
+宿主 `internal/pluginstore` 的安装契约（读源码 + 用宿主真实安装代码验证）：
+
+- 归档资产名必须精确等于 `{id}_{version}_{goos}_{goarch}.zip`（version 是 tag 去掉 `v`）；
+- 校验和资产名必须**恰好**是 `checksums.txt`，每行 `<sha256>  <文件名>`（`*` 前缀会被剥掉）；
+- zip 根目录下必须有且仅有一个动态库，名字是 `{id}{ext}` 或 `{id}-v{version}{ext}`；
+  zip 内出现第二个动态库或嵌套路径会直接失败；
+- 安装落点 `plugins/{goos}/{goarch}/{id}-v{version}{ext}`，宿主把 `-v<版本>` 剥掉后 ID 仍是 `qoder2api`。
+
+本仓库为此增加了：
+
+- `scripts/packstore`：用 Go 生成 zip 与 `checksums.txt`（Windows runner 没有 `zip`/`sha256sum`），
+  8 条单测锁死上面的命名与内容规则；
+- CI：build 阶段按 tag 打 zip，**release 阶段统一汇总** `checksums.txt`
+  （矩阵里每个平台各写一份同名文件会互相覆盖，导致部分 zip 校验和丢失）；
+- 根目录 `registry.json`（schema_version 1，github-release 类型，只给 `repository`，
+  版本交给宿主从 latest release 推导），并有测试校验它能通过宿主的 `ValidatePlugin` 规则。
+
+用宿主真实代码做的离线验证（临时测试，验证后已移出宿主仓库）：
+
+```text
+SelectReleaseAssets → ParseChecksums → VerifyChecksum → InstallArchive
+安装成功：/tmp/.../linux/amd64/qoder2api-v0.1.1.so（6,635,440 字节，zip 2,752,277 字节）
+pluginFileInfoFromPath → id=qoder2api version=0.1.1
+discoverCurrentPluginFiles → 1 个已安装插件（面板据此显示“已安装/可更新”）
+```
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：

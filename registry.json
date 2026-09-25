@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "qoder2api",
+      "name": "Qoder 2API",
+      "description": "Qoder 订阅接入 CPA：auth / model / executor / quota / management 五类能力，支持 chat-completions、Claude、Codex 三协议（含流式）、桌面端多账号导出导入、额度查询、签到与管理页。",
+      "author": "Hkxtor",
+      "repository": "https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin",
+      "homepage": "https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin",
+      "license": "GPL-3.0",
+      "tags": ["Provider", "Qoder", "Auth", "Quota", "Management"]
+    }
+  ]
+}

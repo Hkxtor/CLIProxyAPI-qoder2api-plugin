@@ -99,10 +99,30 @@ jobs:
             -o "dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" .
           ls -la dist
 
+      # 插件商店安装要求归档名 {id}_{version}_{goos}_{goarch}.zip，
+      # 且 zip 根目录下只能有 {id}{ext} 一个动态库；见 scripts/packstore。
+      - name: 打包插件商店归档（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # 归档名里的版本号是 tag 去掉前导 v（宿主按同样规则从 tag 推导）。
+          go run ./scripts/packstore \
+            -lib "dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" \
+            -id qoder2api \
+            -version "${VERSION_TAG#v}" \
+            -goos ${{ matrix.goos }} \
+            -goarch ${{ matrix.goarch }} \
+            -out-dir dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}
+          path: |
+            dist/qoder2api-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}
+            dist/qoder2api_*_${{ matrix.goos }}_${{ matrix.goarch }}.zip
           if-no-files-found: error
 
   release:
@@ -126,14 +146,31 @@ jobs:
           path: assets
           merge-multiple: true
 
-      - name: 生成校验和
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: 生成插件商店校验和（checksums.txt）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 必须在汇总阶段生成：矩阵里每个平台各写一份同名文件会互相覆盖，
+          # 导致部分 zip 的校验和丢失、宿主安装时直接报 checksum not found。
+          go run ./scripts/packstore -checksums-dir assets
+
+      - name: 生成裸文件校验和（SHA256SUMS.txt，供手动安装者核对）
         shell: bash
         run: |
           set -euo pipefail
           cd assets
           ls -la
-          sha256sum ./* > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          shopt -s nullglob
+          libraries=(./*.so ./*.dylib ./*.dll)
+          if [ ${#libraries[@]} -gt 0 ]; then
+            sha256sum "${libraries[@]}" > SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          fi
 
       - name: 生成 Release 正文（安装说明 + tag 注解）
         shell: bash
@@ -142,7 +179,22 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo '## 安装'
+            echo '## 通过 CPA 插件商店安装（推荐）'
+            echo
+            echo '在 CPA 的 `config.yaml` 里把本仓库的 `registry.json` 加为三方源：'
+            echo
+            echo '```yaml'
+            echo 'plugins:'
+            echo '  enabled: true'
+            echo '  store-sources:'
+            echo '    - "https://raw.githubusercontent.com/'"${GITHUB_REPOSITORY}"$'/main/registry.json"'
+            echo '```'
+            echo
+            echo '重启 CPA 后，在管理面板的插件商店里搜 **Qoder 2API** 一键安装，'
+            echo '或调用 `POST /v0/management/plugin-store/qoder2api/install`；'
+            echo '宿主会校验 `checksums.txt` 并把库装到 `plugins/{goos}/{goarch}/`。'
+            echo
+            echo '## 手动安装'
             echo
             echo '下载对应平台的文件，**重命名成宿主认识的插件名**后放进 CPA 的 `plugins/` 目录：'
             echo

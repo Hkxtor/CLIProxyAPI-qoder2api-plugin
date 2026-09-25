@@ -44,7 +44,58 @@
 
 ## 安装
 
-### 方式一：下载预编译产物（不用装 Go）
+### 方式一：通过 CPA 插件商店安装（推荐，可一键升级）
+
+本仓库根目录的 `registry.json` 就是 CPA 的**三方源清单**。在 CPA 的 `config.yaml` 里加上它：
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - "https://raw.githubusercontent.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/main/registry.json"
+```
+
+重启 CPA → 管理面板 → 插件商店 → 搜 **Qoder 2API** → 一键安装。也可以直接调接口：
+
+```bash
+curl -X POST "http://127.0.0.1:8317/v0/management/plugin-store/qoder2api/install" \
+  -H "Authorization: Bearer $CPA_MANAGEMENT_KEY"
+```
+
+宿主会取本仓库最新 Release 里的 `qoder2api_<版本>_<goos>_<goarch>.zip`，核对同名 Release 的
+`checksums.txt`（sha256 校验），解包到 `plugins/<goos>/<goarch>/qoder2api-v<版本>.so`。
+插件 ID 仍是 `qoder2api`（宿主动剥掉 `-v<版本>`），所以 `plugins.configs.qoder2api` 配置照旧；
+再次点击安装即为升级。商店安装要求 `plugins.enabled: true`。
+
+<details>
+<summary>自建三方源（或不想依赖 GitHub API 配额）</summary>
+
+List 接口会为每个 GitHub Release 型条目调用一次 `api.github.com`（未认证 60 次/小时/IP），
+可用 `plugins.store-auth` 给 GitHub 配 token，或改用 `direct` 类型在清单里直接声明产物：
+
+```json
+{
+  "id": "qoder2api",
+  "version": "0.1.1",
+  "install": {
+    "type": "direct",
+    "artifacts": [
+      {
+        "goos": "linux", "goarch": "amd64",
+        "url": "https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/releases/download/v0.1.1/qoder2api_0.1.1_linux_amd64.zip",
+        "sha256": "<zip 的 sha256>"
+      }
+    ]
+  }
+}
+```
+
+两种类型对产物格式的要求一致：归档名 `{id}_{version}_{goos}_{goarch}.zip`，
+zip 根目录下**只能有** `{id}{ext}` 一个动态库，校验和资产名必须恰好是 `checksums.txt`。
+本仓库用 `scripts/packstore` 生成这些资产（`./scripts/packstore/` 下有契约单测）。
+</details>
+
+### 方式二：下载预编译产物（不用装 Go）
 
 [Releases](https://github.com/Hkxtor/CLIProxyAPI-qoder2api-plugin/releases) 里按平台取文件，
 **重命名成宿主认识的插件名**后放进 `plugins/`：
@@ -60,7 +111,7 @@
 同名 Release 附带的 `SHA256SUMS.txt` 可用于校验；产物是宿主 ABI 的 `c-shared` 动态库，
 文件名必须是 `qoder2api.<ext>`（宿主用文件名（去掉扩展名）作为插件 ID）。
 
-### 方式二：本地构建
+### 方式三：本地构建
 
 1. 把产物放进 CPA 的插件目录（`plugins.dir` 指向的目录）：
 
