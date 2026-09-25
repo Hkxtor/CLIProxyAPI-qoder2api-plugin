@@ -81,6 +81,20 @@
 `auth_unavailable: no auth available ... last upstream error: 上游模型 qfmodel 排队中`。
 这不是新错误，是宿主在冷却期内不复用该凭证；等冷却过去或重启宿主即可。
 
+### 8. CI 与发布（GitHub Actions + Release）
+
+- `.github/workflows/ci.yml`：`test`（gofmt / go vet / go test）+ 五个平台的 `c-shared` 构建
+  （linux/amd64、linux/arm64、darwin/arm64 为必过；darwin/amd64 与 windows/amd64 标为 best-effort）
+  + 打 `v*` tag 时自动发 Release（含 `SHA256SUMS.txt`）。
+- 首次 tag 构建暴露一个真问题：release job 在 `download-artifact` 之后没有 `.git`，
+  `gh release create` 直接失败（`failed to run git: fatal: not a git repository`）。
+  现在显式 `actions/checkout` 并传 `--repo "$GITHUB_REPOSITORY"`。
+- `pluginVersion` 改为可用 `-ldflags -X main.pluginVersion=<tag>` 注入：v0.1.0 的产物在宿主里
+  注册为 `version=v0.1.0`（实测日志）；注入值为空时回落默认版本，并有单测锁死。
+- **用 Release 产物（而不是本地构建）在本机真实宿主复测**：插件加载 → 注册版本 `v0.1.0`
+  → 19 个模型 → 1 个账号 → 真实上游调用（免费模型，高峰期排队预算耗尽 → 503 且消息明确
+  “不是额度或凭证问题”）→ 进程稳定、无 panic。
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：
@@ -129,6 +143,7 @@
 
 ## 自动化验证
 
+- GitHub Actions 在 5 个平台构建全绿（linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64）。
 - `gofmt -l` 干净、`go vet ./...` 干净、`go test ./... -count=1` 全绿（含新增回归测试）。
 - 真实宿主集成冒烟 11/11 通过（加载/模型/账号/上游清单/额度/刷新/签到/非流式/流式/无泄漏/无 panic）。
 

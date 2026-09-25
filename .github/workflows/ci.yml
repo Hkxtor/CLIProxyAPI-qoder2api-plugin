@@ -115,7 +115,10 @@ jobs:
     steps:
       # gh 需要 git 仓库上下文（否则报 “not a git repository”）；
       # 即使命令里给了 --repo，留着 checkout 也让行为更稳。
+      # fetch-depth: 0 是为了读到 tag 注解（Release 正文的「本版要点」）。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 下载全部平台产物
         uses: actions/download-artifact@v4
@@ -132,6 +135,34 @@ jobs:
           sha256sum ./* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: 生成 Release 正文（安装说明 + tag 注解）
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## 安装'
+            echo
+            echo '下载对应平台的文件，**重命名成宿主认识的插件名**后放进 CPA 的 `plugins/` 目录：'
+            echo
+            echo '| 平台 | 下载文件 | 放进去时改名为 |'
+            echo '| --- | --- | --- |'
+            echo '| Linux x86_64 | `qoder2api-linux-amd64.so` | `qoder2api.so` |'
+            echo '| Linux arm64 | `qoder2api-linux-arm64.so` | `qoder2api.so` |'
+            echo '| macOS Apple Silicon | `qoder2api-darwin-arm64.dylib` | `qoder2api.dylib` |'
+            echo '| macOS Intel | `qoder2api-darwin-amd64.dylib` | `qoder2api.dylib` |'
+            echo '| Windows x64 | `qoder2api-windows-amd64.dll` | `qoder2api.dll` |'
+            echo
+            echo '`SHA256SUMS.txt` 可用于校验完整性；插件配置与账号导入见仓库 README。'
+            echo
+            echo '## 本版要点'
+            echo
+            # tag 注解作为本版要点；首行为空时去掉，无注解时留空段落不影响阅读。
+            git tag -l --format='%(contents)' "$TAG" | sed '1{/^$/d}'
+          } > release-notes.md
+          cat release-notes.md
+
       - name: 创建 Release 并上传产物
         env:
           GH_TOKEN: ${{ github.token }}
@@ -141,6 +172,7 @@ jobs:
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
+            --notes-file release-notes.md \
             --generate-notes \
             --verify-tag \
             assets/*
