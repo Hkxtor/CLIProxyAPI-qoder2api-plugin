@@ -200,6 +200,35 @@ poll : {PollEndpoint}?nonce=&verifier=&challenge_method=S256
 结论：**升级只能走商店**（面板更新或 `POST /v0/management/plugin-store/qoder2api/install`），
 它会同时更新 `store.version` 与 `release-tag` 并下载 CI 产物。
 
+## v0.1.2 修正后的完整实测证据（生产实例）
+
+```text
+# 升级：必须走商店 install（版本被 store.version + release-tag 双向钉死）
+POST /v0/management/plugin-store/qoder2api/install?source=source-94348b6b9bec
+  → status=installed  version=0.1.2  path=plugins/linux/amd64/qoder2api-v0.1.2.so
+安装后 config: store.version=0.1.2, store.release-tag=v0.1.2
+落盘 sha256 == Release 裸产物 (a9e172bb022db97017083149…)
+宿主日志: plugin loaded plugin_id=qoder2api version=0.1.2
+
+# 登录入口（修复前 500 failed to generate authorization url）
+GET /v0/management/qoder-auth-url
+  → 200  url=https://qoder.com/device/selectAccounts?nonce=…&challenge=…&challenge_method=S256&client_id=e883ade2-…
+         state=11587eb2… (32 字符)
+GET /v0/management/qoder-auth-url?region=cn
+  → 200  url=https://qoder.com.cn/device/selectAccounts?...   （区域覆盖生效）
+
+# 轮询（接口名是 get-auth-status，不是 auth-status；插件内部真打上游）
+GET /v0/management/get-auth-status?state=<state>  → 200 {"status":"wait"} ×4
+插件日志: oauth login started (region=global, state=11587eb2)
+
+# 其它能力未受影响
+/v1/models → 19 个 qoder-* 模型；插件状态接口 → version=v0.1.2，账号 1 个
+```
+
+宿主对照实验（同一实例、同一时刻）：内置 `codex-auth-url` / `anthropic-auth-url` /
+`antigravity-auth-url` 全部 200，`xai-auth-url` 500 且原因是 `failed to start device authorization
+flow`（上游网络不可达）——与插件无关。
+
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
