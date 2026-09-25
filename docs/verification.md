@@ -123,6 +123,24 @@ pluginFileInfoFromPath → id=qoder2api version=0.1.1
 discoverCurrentPluginFiles → 1 个已安装插件（面板据此显示“已安装/可更新”）
 ```
 
+真实宿主端到端实测（v0.1.1，独立实例端口 18319，未触碰生产实例）：
+
+```text
+GET  /v0/management/plugin-store
+  sources: official + source-94348b6b9bec (raw.githubusercontent.com)
+  plugins: qoder2api  install_type=github-release  source_id=source-94348b6b9bec
+
+POST /v0/management/plugin-store/qoder2api/install?source=source-94348b6b9bec
+  status=installed  version=0.1.1  install_type=github-release
+  path=/tmp/cpa-store-it/plugins/linux/amd64/qoder2api-v0.1.1.so  restart_required=False
+
+重启后宿主日志：
+  plugin loaded plugin_id=qoder2api version=0.1.1 path=.../linux/amd64/qoder2api-v0.1.1.so
+面板状态：installed_version=v0.1.1  update_available=False
+插件状态接口：version=v0.1.1（与 release 一致）
+落盘文件 sha256 == Release 裸产物 sha256（18d287a4ea4aec5074a8…）
+```
+
 ## 部署到宿主（本机实测）
 
 按下面步骤装好并跑通（凭证与日志类文件都被 .gitignore 忽略）：
