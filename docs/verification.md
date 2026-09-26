@@ -238,6 +238,30 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### 旧 ID 兼容开关已按需打开（2026-09-26）
+
+用户决定打开兼容开关，于是把 12 个上游 SKU 写进 `extra_models`（字符串形式）：
+
+```yaml
+extra_models: "auto,qmodel_latest,qmodel,qmodel_38max,qfmodel,kmodel_latest,kmodel,gmodel,gfmodel,dmodel,dfmodel,mmodel"
+```
+
+重启宿主后 `/v1/models` 19 → **31 项**（12 个模型名各有一个旧 ID 孪生项），12/12 全部到位。
+
+端到端实测：
+
+```text
+qoder-qfmodel       → 200 内容="好" 回显=qfmodel         (36s，含排队)   ← 旧 ID 打通到上游
+qoder-Qwen3.8-Flash → 200 内容="好" 回显=Qwen3.8-Flash   (2s)            ← 新 ID 不受影响
+qoder-qmodel_38max  → 403 upstream code=112 pricingUrl=qoder.com/pricing  ← 订阅档位限制
+qoder-Qwen3.8-Max   → 403 同上                                            ← 同 SKU 的新 ID 一样被拒
+```
+
+最后两行是刻意对照的：`Qwen3.8-Max` 的 403 来自**账号档位**（上游 code 112 + 定价页链接），
+与模型 ID 用新名还是旧名无关；免费模型 `Qwen3.8-Flash` 新旧 ID 都能跑通。
+
+**关闭方式**：`PATCH /v0/management/plugins/qoder2api/config {"extra_models": ""}` + 重启宿主 → 回到 19 项。
+
 ### 模型目录的刷新时机（实测，别猜）
 
 宿主只在**插件加载/重载**时拉取插件模型清单，改配置不会立即刷新目录：
