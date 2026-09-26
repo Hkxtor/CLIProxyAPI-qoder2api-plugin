@@ -238,6 +238,34 @@ flow`（上游网络不可达）——与插件无关。
 ⚠️ 另外提醒：改生产 YAML 后必须过一遍 `yaml.safe_load` 再重启（本轮早前曾因
 `store-sources` 缩进顶格导致宿主起不来，停机约 2 分钟）。
 
+### v0.1.6：国内版 OAuth 登录入口
+
+**需求**：OAuth 登录只有国际版入口，要加国内版。
+
+**现状核实**：插件 `auth.login.start` 本来就按 region 选端点（`authLoginRegion`：请求 metadata 优先，
+其次插件配置），但**界面上没有任何入口**；宿主的 OAuth 面板是硬编码 provider 列表，插件不在其中。
+所以缺的是"看得见的区域入口"，不是登录能力。
+
+**实现**：插件控制台页新增「添加账号（OAuth 登录）」卡片，两个按钮（国际版 / 国内版）→ 调宿主的
+`/v0/management/qoder-auth-url?region=global|cn` 取链接，再用 `/v0/management/get-auth-status?state=`
+轮询；成功后由**宿主** `savePluginLoginRecords` 落盘账号。
+
+**为什么不自己实现登录路由**：插件侧的 `auth.login.poll` 成功时会返回含 token 的 `AuthData`，
+但它没有落盘责任 —— 自建路由去轮询会消耗掉会话却不保存账号，还要自己保证不泄漏 token。
+宿主那条路已经完整（`pollLogin → savePluginLoginRecords → CompleteOAuthSession`）。
+
+**实测**：
+
+```text
+GET /v0/management/qoder-auth-url               → 200  https://qoder.com/device/selectAccounts?...
+GET /v0/management/qoder-auth-url?region=cn     → 200  https://qoder.com.cn/device/selectAccounts?...
+（其余 PKCE 参数一致：challenge_method=S256、client_id 相同）
+```
+
+**验证边界（未验证部分）**：本机只验证到"两个区域都能生成授权链接 + 页面入口存在"。
+**没有国内账号**，所以国内版走到"浏览器授权完成 → 账号落盘"这一段没有实测；国际版该路径此前
+由用户在生产环境实测通过（走的是同一条宿主流程，只是端点域名不同）。
+
 ### 旧 ID 兼容开关已按需打开（2026-09-26）
 
 用户决定打开兼容开关，于是把 12 个上游 SKU 写进 `extra_models`（字符串形式）：

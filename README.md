@@ -311,6 +311,29 @@ curl -s -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   ⚠️ 清单或模型 ID 变化后**要重启宿主**才会体现在 `/v1/models` 里 —— 实测：把 `extra_models` 清空后
   宿主的模型目录仍是 21 项（含两个旧 ID），重启后回到 19 项。宿主只在插件加载/重载时拉取模型清单。
 
+## 添加账号（OAuth 登录）
+
+两种区域入口都在**插件控制台页**里：`GET /v0/resource/plugins/qoder2api/console` → 卡片「添加账号（OAuth 登录）」
+
+- **登录国际版** → `qoder.com` 的 device 授权页
+- **登录国内版** → `qoder.com.cn` 的 device 授权页
+
+点按钮会显示授权链接并自动轮询，浏览器里完成授权后**账号直接写入 CPA**（由宿主保存 auth 记录，不需要手工导入）。
+宿主的 OAuth 面板只列它自己硬编码的 provider，插件不出现在那份列表里 —— 所以区域入口由插件页提供。
+
+不想用页面的话，等价的两条宿主接口（`region` 走 query，会被宿主透传成插件 metadata）：
+
+```bash
+# 1) 取授权链接（region 省略时用插件配置里的 region）
+curl -H "Authorization: Bearer <管理密钥>" \
+  "http://127.0.0.1:18318/v0/management/qoder-auth-url?region=cn"
+#    → {"url":"https://qoder.com.cn/device/selectAccounts?...","state":"<state>"}
+
+# 2) 轮询状态（status: wait / ok / error）；ok 表示账号已落盘
+curl -H "Authorization: Bearer <管理密钥>" \
+  "http://127.0.0.1:18318/v0/management/get-auth-status?state=<state>"
+```
+
 ## 客户端接入
 
 CPA 的地址 + 任意 `api-keys` 即可，模型名用带前缀的 ID：

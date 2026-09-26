@@ -363,3 +363,40 @@ func TestHostReservedQuotaPathNotShadowed(t *testing.T) {
 		t.Fatalf("batch quota route should be handled, got %d %s", resp.StatusCode, resp.Body)
 	}
 }
+
+// TestConsolePageOffersBothOAuthRegions 固化用户反馈的需求：
+// OAuth 登录不能只有国际版入口，国内版（qoder.com.cn）也要能从界面点到。
+// 同时锁死实现路径：链接与轮询必须走宿主接口（宿主 savePluginLoginRecords 负责落盘），
+// 插件不许自己在别的路由上完成会话 —— 否则会话被消耗掉却没有账号落盘。
+func TestConsolePageOffersBothOAuthRegions(t *testing.T) {
+	page := consolePageHTML(managementRoutePrefix)
+
+	for _, want := range []string{
+		`id="login-global"`, `id="login-cn"`,
+		`/qoder-auth-url?region=`, `/get-auth-status?state=`,
+		`qoder.com`, `qoder.com.cn`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("登录入口缺少 %q", want)
+		}
+	}
+	// 不允许自建登录会话接口：会话与落盘都归宿主。
+	for _, forbidden := range []string{`/login/start`, `login/poll`, `auth.login.poll`} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("页面不应出现自建登录接口 %q", forbidden)
+		}
+	}
+}
+
+// TestLoginEntryUsesQueryMetadata 确认 region 是靠 query metadata 传给插件的
+// （宿主 ServePluginAuthURL 会 queryValuesToMetadata），所以页面里两个按钮
+// 必须显式带 region，不能只依赖插件配置里的 region。
+func TestLoginEntryUsesQueryMetadata(t *testing.T) {
+	page := consolePageHTML(managementRoutePrefix)
+	if !strings.Contains(page, "startLogin('global'") || !strings.Contains(page, "startLogin('cn'") {
+		t.Fatal("两个区域按钮必须各自显式传 region")
+	}
+	if !strings.Contains(page, "encodeURIComponent(region)") {
+		t.Fatal("region 必须做 URL 编码后再拼 query")
+	}
+}

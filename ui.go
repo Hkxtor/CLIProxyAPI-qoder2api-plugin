@@ -75,6 +75,19 @@ const consolePageTemplate = `<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <h2 style="margin-top:0">添加账号（OAuth 登录）</h2>
+  <div class="row">
+    <button id="login-global">登录国际版（qoder.com）</button>
+    <button id="login-cn">登录国内版（qoder.com.cn）</button>
+  </div>
+  <div class="muted" id="login-state" style="margin-top:8px">在浏览器完成授权后，账号会自动写入 CPA，无需手工导入。</div>
+  <div id="login-pending" style="display:none;margin-top:8px">
+    <div class="muted">在浏览器打开这个链接完成授权（10 分钟内有效）：</div>
+    <a id="login-url" href="#" target="_blank" rel="noreferrer"></a>
+  </div>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0">账号</h2>
   <div class="muted" id="account-hint">模型 ID 需要带 <code>qoder-</code> 前缀（例如 <code>qoder-claude-sonnet</code>）。</div>
   <table>
@@ -364,6 +377,80 @@ const consolePageTemplate = `<!DOCTYPE html>
       showError(err.message, 'bad');
     }
   }
+
+  // ---- OAuth 登录（区域入口）----
+  // 宿主的 OAuth 面板只列它自己硬编码的 provider，插件不在那份列表里，所以区域入口放在这里。
+  // 链接与轮询都走宿主的管理接口：登录成功后由宿主 savePluginLoginRecords 负责落盘，
+  // 插件绝不能自己在另一条路由上完成会话（否则会把会话消耗掉但没保存账号）。
+  const HOST_API = '/v0/management';
+  let loginTimer = null;
+
+  async function hostApi(path, options) {
+    const key = currentKey();
+    if (!key) throw new Error('请先填写 CPA 管理密钥');
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, (options && options.headers) || {});
+    headers['Authorization'] = 'Bearer ' + key;
+    const response = await fetch(HOST_API + path, Object.assign({ headers }, options || {}));
+    const text = await response.text();
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { raw: text }; }
+    if (response.status === 401 || response.status === 403) {
+      stopAuto('管理密钥被拒绝，已停止自动刷新（避免触发 CPA 的 IP 封禁）');
+      throw new Error('管理鉴权失败：请检查管理密钥');
+    }
+    if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
+    return payload;
+  }
+
+  function stopLoginPolling() {
+    if (loginTimer !== null) { clearInterval(loginTimer); loginTimer = null; }
+  }
+
+  async function startLogin(region, label) {
+    stopLoginPolling();
+    $('login-pending').style.display = 'none';
+    setText($('login-state'), label + '：正在向 Qoder 申请授权链接 …');
+    try {
+      const payload = await hostApi('/qoder-auth-url?region=' + encodeURIComponent(region));
+      const url = payload.url || payload.auth_url || '';
+      const state = payload.state || '';
+      if (!url || !state) throw new Error('宿主未返回授权链接');
+      const link = $('login-url');
+      link.href = url;
+      link.textContent = url;
+      $('login-pending').style.display = '';
+      setText($('login-state'), label + '：请在浏览器打开上面链接完成授权；授权成功后账号会自动出现在下方列表。');
+      loginTimer = setInterval(() => pollLogin(state, label), 3000);
+      pollLogin(state, label);
+    } catch (err) {
+      setText($('login-state'), label + '：' + err.message);
+    }
+  }
+
+  async function pollLogin(state, label) {
+    try {
+      const payload = await hostApi('/get-auth-status?state=' + encodeURIComponent(state));
+      if (payload.status === 'ok') {
+        stopLoginPolling();
+        $('login-pending').style.display = 'none';
+        setText($('login-state'), label + '：登录成功，账号已写入 CPA。');
+        await load();
+        return;
+      }
+      if (payload.status === 'error') {
+        stopLoginPolling();
+        setText($('login-state'), label + '：登录失败 —— ' + (payload.error || '未知错误'));
+        return;
+      }
+      // status=wait：用户还没在浏览器里完成授权，继续等。
+    } catch (err) {
+      stopLoginPolling();
+      setText($('login-state'), label + '：轮询失败 —— ' + err.message);
+    }
+  }
+
+  $('login-global').addEventListener('click', () => startLogin('global', '国际版'));
+  $('login-cn').addEventListener('click', () => startLogin('cn', '国内版'));
 
   async function loadLogs() {
     try {
